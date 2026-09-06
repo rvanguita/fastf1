@@ -39,26 +39,45 @@ uv run pytest --cov=src --cov-report=term-missing
 ```
 
 The test suites are deliberately infra-free: FastF1 (network), Spark/Delta (JVM), MLflow, MySQL
-and S3 are all mocked or replaced with `tmp_path`, so `pytest` runs in seconds. They cover the
-pure logic only — `src/` helpers + `ExtractData` (FastF1 mocked), the FastAPI routes (model
-mocked via `main.model_find`), and the dashboard's `compute_*` / `format_color` / `_rank_by` /
-`_color_map` helpers. SQL transformations, the Silver Spark logic, the DAG and the training
-script are **not** covered. `pytest`/`httpx` live in each project's `[dependency-groups].dev`;
-`app/api` and `app/streamlit` set `[tool.uv] package = false` (single-module services).
+and S3 are all mocked or replaced with `tmp_path`, so `pytest` runs in seconds. What's covered:
 
-CI: `.github/workflows/tests.yml` runs `ruff format --check .` plus the three suites (matrix,
-one job per uv project, `uv run --locked`) on every `push` and `pull_request`. `setup-uv` is
-pinned to `0.12.0` to match the root `uv_build` constraint. `ruff check` (lint) is **not** in
-CI — the `# %%` script modules carry ~20 long-standing findings; only `ruff format` is kept
+- **root (`tests/`)** — `ExtractData` (FastF1 mocked), `sender_local.find_delta_tables` /
+  `create_mysql_engine`, `sender.Sender` (S3 client mocked), `spark_save_table`'s Delta
+  write-chain (mock DataFrame), and `silver_data.read_sql_file` + the `.format()` brace-safety
+  contract of every file in `src/queries/`.
+- **`app/api/tests/`** — the FastAPI routes, model mocked via `main.model_find`.
+- **`app/streamlit/tests/`** — the pandas-only helpers: `compute_*`, `format_color`, `_rank_by`,
+  `_color_map`, `get_id_predictions`.
+
+**Not** covered: the actual SQL transformations / Silver Spark execution (only the query files'
+`.format()` safety is smoke-checked, not what they compute), the DAG, and the training script.
+`app/api` and `app/streamlit` set `[tool.uv] package = false` (not built as wheels); their
+`[dependency-groups].dev` adds `pytest` (and `httpx`, for the API's `TestClient`). `app/api` is
+a single `main.py`; `app/streamlit` is `main.py` + `data.py` + `analytics.py` + `charts.py`
+(the tests import `analytics` / `data` directly).
+
+CI: `.github/workflows/tests.yml` runs on every `push` and `pull_request` — a `format` job
+(`uvx ruff@0.16.2 format --check .`) plus a `pytest` matrix (one job per uv project,
+`uv run --locked pytest -q`). `setup-uv` is pinned to `0.12.0` to match the root `uv_build`
+constraint; ruff is pinned to `0.16.2` (matches the root dep). `ruff check` (lint) is **not** in
+CI — the `# %%` script modules carry ~16 long-standing findings; only `ruff format` is kept
 clean.
 
 Each app has its own Dockerfile and is built independently by `docker-compose.yml`:
 - `app/api` — FastAPI service, own `pyproject.toml`/`uv.lock`
 - `app/streamlit` — Streamlit dashboard, own `pyproject.toml`/`uv.lock`
 
+`.devcontainer/` (VS Code, "Python 3.13 and Java 17") is the one place the Spark/Delta stages
+run without extra setup — it presets `JAVA_HOME` and `PYSPARK_SUBMIT_ARGS` and forwards Jupyter
+(8888) and the Spark UI (4040). Outside it (or `docker compose`), the Bronze/Silver stages need
+a local JVM + Java 17.
+
+Root `main.py` and `src/lake_fastf1/__init__.py` (and the `lake-fastf1` console script) are
+leftover `uv init` scaffolding — the real code is in `src/*.py`, `dags/`, and `app/`.
+
 ## Environment variables
 
-Config is entirely via env vars (loaded from `.env`, not committed with real secrets in practice — see `.env` for the local dev shape). Every pipeline module (`src/*.py`) reads required paths via `os.environ[...]` and will raise `KeyError` if unset — always run through `docker compose` or with `.env` sourced.
+Config is entirely via env vars (loaded from `.env`, which is gitignored — the tracked template is `.env.example`; copy it to `.env` and fill in the blanks). Every pipeline module (`src/*.py`) reads required paths via `os.environ[...]` and will raise `KeyError` if unset — always run through `docker compose` or with `.env` sourced.
 
 Key vars: `PATH_RAW`, `PATH_BRONZE`, `PATH_SILVER`, `PATH_QUERIES` (data lake layer paths + SQL directory), `MLFLOW_URI`, `MLFLOW_MODEL_REGISTERED`, `MLFLOW_EXPERIMENT_NAME`, `API_PORT`, `MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_ID_TABLE` (used by `src/sender_local.py` to mirror Bronze/Silver Delta tables into MySQL), `AWS_KEY`/`AWS_SECRET_KEY` (used by `src/sender.py` for S3 upload of raw Parquet files).
 
@@ -92,9 +111,9 @@ All Silver SQL files are read as raw strings and `.format()`-ed (not parameteriz
 
 ### Serving layer
 
-- **`app/api/main.py`** (FastAPI): loads the latest version of `MLFLOW_MODEL_REGISTERED` from the MLflow registry on every `/predict` call (no caching — `model_find` re-queries MLflow each request), predicts win probability, and returns a dict keyed by the caller-supplied `id`. Callers must include an `id` field per row in the request body; feature columns are selected via `model.feature_names_in_`, so the request payload must carry every feature the trained pipeline expects.
+- **`app/api/main.py`** (FastAPI): serves `MLFLOW_MODEL_REGISTERED`. `model_find` caches the loaded model for `MODEL_CACHE_TTL` seconds (env, default 300) — `_load_model` does the actual registry fetch — so most requests skip the MLflow round-trip; a newly registered version is picked up once the entry goes stale. `POST /predict` predicts win probability and returns a dict keyed by the caller-supplied `id` (every row needs an `id`; features are selected via `model.feature_names_in_`). `GET /model_info` returns `{n_features, features, importances, classes}` — `_feature_importances` walks a `Pipeline` for the step exposing `feature_importances_` (the RandomForest).
 
-- **`app/streamlit/main.py`** (dashboard): reads Bronze (`get_bronze`) and Silver `tb_abt` (`get_predictions`) directly from the Delta tables via `deltalake.DeltaTable` (not Spark), calls the FastAPI `/predict` endpoint to get win probabilities for the Silver rows, and merges everything with driver metadata (team, color, headshot) pulled from Bronze. Both loaders are `st.cache_data(ttl="1d")`. Sections are: KPI cards, season snapshot, recent race cards, then tabs for win probability / points ranking / season progression / position heatmap / driver stats / constructors / raw data. See `README.md` for the full tab-by-tab layout description if extending the dashboard.
+- **`app/streamlit/`** (dashboard) — four modules: `main.py` (page config, sidebar, layout), `data.py` (Delta reads + API calls + `st.cache_data` wrappers), `analytics.py` (pure pandas: `compute_driver_stats` / `compute_team_stats` / `compute_reliability` / `compute_teammate_h2h` / `compute_momentum` / `build_insights` / `top_factors`), `charts.py` (theme-aware Plotly builders via `_template()` = light/dark from `st.get_option("theme.base")`). `data.load_predictions(year)` reads `tb_abt` **for one season**, sends only that season's rows to `/predict` (a `-10000`-filled copy — the display frame keeps nulls), and returns them enriched with Bronze driver metadata; an unreachable API degrades to a notice, not a traceback. Layout: an always-visible header (championship strip · top-5 probability cards with headshots · auto `build_insights` bullets) over four tabs — `🔮 Prediction` (win-prob-over-time, momentum, explainability), `📅 Season` (snapshot, points, progression, recent races, heatmap), `🔬 Deep Dives` (drivers / constructors / teammates / quali & reliability), `📋 Data`.
 
 ### Spark/Delta conventions
 
