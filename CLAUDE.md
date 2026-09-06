@@ -39,26 +39,43 @@ uv run pytest --cov=src --cov-report=term-missing
 ```
 
 The test suites are deliberately infra-free: FastF1 (network), Spark/Delta (JVM), MLflow, MySQL
-and S3 are all mocked or replaced with `tmp_path`, so `pytest` runs in seconds. They cover the
-pure logic only — `src/` helpers + `ExtractData` (FastF1 mocked), the FastAPI routes (model
-mocked via `main.model_find`), and the dashboard's `compute_*` / `format_color` / `_rank_by` /
-`_color_map` helpers. SQL transformations, the Silver Spark logic, the DAG and the training
-script are **not** covered. `pytest`/`httpx` live in each project's `[dependency-groups].dev`;
-`app/api` and `app/streamlit` set `[tool.uv] package = false` (single-module services).
+and S3 are all mocked or replaced with `tmp_path`, so `pytest` runs in seconds. What's covered:
 
-CI: `.github/workflows/tests.yml` runs `ruff format --check .` plus the three suites (matrix,
-one job per uv project, `uv run --locked`) on every `push` and `pull_request`. `setup-uv` is
-pinned to `0.12.0` to match the root `uv_build` constraint. `ruff check` (lint) is **not** in
-CI — the `# %%` script modules carry ~20 long-standing findings; only `ruff format` is kept
+- **root (`tests/`)** — `ExtractData` (FastF1 mocked), `sender_local.find_delta_tables` /
+  `create_mysql_engine`, `sender.Sender` (S3 client mocked), `spark_save_table`'s Delta
+  write-chain (mock DataFrame), and `silver_data.read_sql_file` + the `.format()` brace-safety
+  contract of every file in `src/queries/`.
+- **`app/api/tests/`** — the FastAPI routes, model mocked via `main.model_find`.
+- **`app/streamlit/tests/`** — the pandas-only helpers: `compute_*`, `format_color`, `_rank_by`,
+  `_color_map`, `get_id_predictions`.
+
+**Not** covered: the actual SQL transformations / Silver Spark execution (only the query files'
+`.format()` safety is smoke-checked, not what they compute), the DAG, and the training script.
+`app/api` and `app/streamlit` set `[tool.uv] package = false` (single-module services); their
+`[dependency-groups].dev` adds `pytest` (and `httpx`, for the API's `TestClient`).
+
+CI: `.github/workflows/tests.yml` runs on every `push` and `pull_request` — a `format` job
+(`uvx ruff@0.16.2 format --check .`) plus a `pytest` matrix (one job per uv project,
+`uv run --locked pytest -q`). `setup-uv` is pinned to `0.12.0` to match the root `uv_build`
+constraint; ruff is pinned to `0.16.2` (matches the root dep). `ruff check` (lint) is **not** in
+CI — the `# %%` script modules carry ~16 long-standing findings; only `ruff format` is kept
 clean.
 
 Each app has its own Dockerfile and is built independently by `docker-compose.yml`:
 - `app/api` — FastAPI service, own `pyproject.toml`/`uv.lock`
 - `app/streamlit` — Streamlit dashboard, own `pyproject.toml`/`uv.lock`
 
+`.devcontainer/` (VS Code, "Python 3.13 and Java 17") is the one place the Spark/Delta stages
+run without extra setup — it presets `JAVA_HOME` and `PYSPARK_SUBMIT_ARGS` and forwards Jupyter
+(8888) and the Spark UI (4040). Outside it (or `docker compose`), the Bronze/Silver stages need
+a local JVM + Java 17.
+
+Root `main.py` and `src/lake_fastf1/__init__.py` (and the `lake-fastf1` console script) are
+leftover `uv init` scaffolding — the real code is in `src/*.py`, `dags/`, and `app/`.
+
 ## Environment variables
 
-Config is entirely via env vars (loaded from `.env`, not committed with real secrets in practice — see `.env` for the local dev shape). Every pipeline module (`src/*.py`) reads required paths via `os.environ[...]` and will raise `KeyError` if unset — always run through `docker compose` or with `.env` sourced.
+Config is entirely via env vars (loaded from `.env`, which is gitignored — the tracked template is `.env.example`; copy it to `.env` and fill in the blanks). Every pipeline module (`src/*.py`) reads required paths via `os.environ[...]` and will raise `KeyError` if unset — always run through `docker compose` or with `.env` sourced.
 
 Key vars: `PATH_RAW`, `PATH_BRONZE`, `PATH_SILVER`, `PATH_QUERIES` (data lake layer paths + SQL directory), `MLFLOW_URI`, `MLFLOW_MODEL_REGISTERED`, `MLFLOW_EXPERIMENT_NAME`, `API_PORT`, `MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_ID_TABLE` (used by `src/sender_local.py` to mirror Bronze/Silver Delta tables into MySQL), `AWS_KEY`/`AWS_SECRET_KEY` (used by `src/sender.py` for S3 upload of raw Parquet files).
 
