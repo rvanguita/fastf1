@@ -16,8 +16,8 @@ dev = [
     "pytest>=8.3",
 ]
 
-# Single-module dashboard (main.py), not a distributable package — tell uv not
-# to build/install it, only its dependencies.
+# Flat module service (main/data/analytics/charts), not a distributable
+# package — tell uv not to build/install it, only its dependencies.
 [tool.uv]
 package = false
 
@@ -27,4 +27,9 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# The sibling modules are first-party — a bare `data/` dir at the repo root
+# otherwise makes ruff's isort treat only `import data` as local.
+[tool.ruff.lint.isort]
+known-first-party = ["analytics", "charts", "data", "main"]
 

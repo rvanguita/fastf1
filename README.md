@@ -201,37 +201,46 @@ MYSQL_PASSWORD=
 
 The Streamlit dashboard (`http://localhost:8501`) provides a full view of the F1 season — from raw race results to ML-based championship predictions.
 
+### Code
+
+`app/streamlit/` is four modules: `main.py` (page config, sidebar, layout),
+`data.py` (Delta reads, API calls, `st.cache_data` wrappers), `analytics.py`
+(pure pandas aggregates + `build_insights`), `charts.py` (theme-aware Plotly
+builders). Charts follow the viewer's light/dark Streamlit theme.
+
 ### Layout
 
-**Top of page — always visible:**
+**Sidebar:** season selector (single), driver multi-select (defaults to top-5 by
+probability, shown as `M. Verstappen — Red Bull Racing`), and a momentum /
+recent-race window slider (3–10).
 
-| Section | Description |
-|---|---|
-| 🥇🥈🥉 KPI cards | Top-3 drivers by latest predicted win probability, with Δ vs previous race |
-| 📊 Season snapshot | Rounds completed, points leader, championship gap, most wins, biggest grid → finish mover |
-| 🏆 Recent race results | Top-5 finishers per GP as bordered cards (adjustable 3–10 races), with podium medals, points and grid → finish movement (▲/▼) per driver |
-
-**Filters:** driver multi-select (defaults to top-5 by probability) and season selector.
+**Top of page — always visible:** championship strip (rounds · points leader ·
+gap to P2 · most wins), top-5 probability cards (headshot · win % · Δ vs last
+round), and an auto **Insights** panel — up to five deterministic findings
+(biggest probability mover, fastest-rising form, closest teammate fight, best
+qualifier, reliability watch).
 
 **Tabs:**
 
 | Tab | Content |
 |---|---|
-| 📈 Win Probability | Plotly line chart — win % over time per driver, team colors, unified hover |
-| 🏅 Points Ranking | Horizontal bar chart of accumulated championship points for the season |
-| 📊 Season Progression | Cumulative points line chart across rounds — shows momentum per driver |
-| 🗺️ Position Heatmap | Driver × race grid colored by finishing position (green = front, red = back) |
-| 🧑‍🚀 Driver Stats | Full season table — races, wins, podiums, poles, DNFs, points, best/avg finish, avg grid, avg places gained/lost, podium rate |
-| 🏗️ Constructors | Constructors' championship — points bar chart plus wins/podiums/points table |
-| 📋 Data | Win probability pivot table + full feature table (expandable) |
+| 🔮 Prediction | Win probability over time (selected drivers, team colors, unified hover); **Momentum** — Δ-since-last-round bars + rank-change table; **Explainability** expander — global RF feature importance (from `GET /model_info`) plus a per-driver "top factors" heuristic (importance × above/below the field median) |
+| 📅 Season | Season snapshot KPIs, points ranking bar, cumulative points progression, recent-race cards (grid → finish ▲/▼), finishing-position-by-round heatmap |
+| 🔬 Deep Dives | Sub-tabs — Drivers (full season table with headshots), Constructors (points bar + table), **Teammates** (intra-constructor race/quali/points head-to-head), **Quali & reliability** (DNF rate, points-finish rate, grid stats + grid → finish spread box plot) |
+| 📋 Data | Win probability pivot + full feature table (nulls preserved) |
 
 ## API
 
-The FastAPI service loads the latest registered model from MLflow and serves predictions via `POST /predict`.
+The FastAPI service serves the latest registered MLflow model, cached for
+`MODEL_CACHE_TTL` seconds (default 300) so most requests skip the registry
+round-trip.
 
 ```bash
 # Health check
 curl http://localhost:5002/health_check
+
+# Model features + random-forest importances
+curl http://localhost:5002/model_info
 
 # Predict
 curl -X POST http://localhost:5002/predict \
