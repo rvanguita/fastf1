@@ -240,6 +240,50 @@ def result_matrix(races: pd.DataFrame, year: int) -> pd.DataFrame:
     return df.sort_values(["RoundNumber", "Position"])
 
 
+def summarize_race(results: pd.DataFrame, round_number: int) -> dict:
+    """Resume uma corrida já normalizada para uso em cards editoriais."""
+    if results.empty or "RoundNumber" not in results:
+        return {}
+    race = results[results["RoundNumber"] == round_number].copy()
+    if race.empty:
+        return {}
+
+    race["OfficialFinish"] = pd.to_numeric(race.get("OfficialFinish"), errors="coerce")
+    race["OfficialGrid"] = pd.to_numeric(race.get("OfficialGrid"), errors="coerce")
+    classified = race[race["OfficialFinish"].notna()].sort_values("OfficialFinish")
+    podium = classified[classified["OfficialFinish"] <= 3]
+    gains = classified.dropna(subset=["OfficialGrid"]).copy()
+    gains["Gain"] = gains["OfficialGrid"] - gains["OfficialFinish"]
+    gains = gains[gains["Gain"] > 0]
+    biggest_gainer = gains.sort_values(
+        ["Gain", "OfficialFinish"], ascending=[False, True]
+    ).head(1)
+
+    event_name = race.get("EventName", pd.Series(dtype="object")).dropna()
+    winner = classified[classified["OfficialFinish"] == 1].head(1)
+    status = race.get("ResultStatus", pd.Series("FINISHED", index=race.index))
+    incidents = int((status != "FINISHED").sum())
+    return {
+        "event_name": event_name.iloc[0]
+        if not event_name.empty
+        else f"Rodada {round_number}",
+        "winner": winner.iloc[0]["FullName"] if not winner.empty else "—",
+        "podium": " · ".join(
+            f"P{int(row['OfficialFinish'])} {short_name(row['FullName'])}"
+            for _, row in podium.iterrows()
+        )
+        or "—",
+        "biggest_gainer": (
+            f"{short_name(biggest_gainer.iloc[0]['FullName'])} "
+            f"({biggest_gainer.iloc[0]['Gain']:+.0f})"
+            if not biggest_gainer.empty
+            else "—"
+        ),
+        "incidents": incidents,
+        "classified": len(classified),
+    }
+
+
 def compute_teammate_h2h(races: pd.DataFrame, year: int) -> pd.DataFrame:
     df = _season_races(races, year)
     if df.empty or "TeamId" not in df.columns:

@@ -1,6 +1,6 @@
-"""Tests for SQL-file handling in ``src.silver_data`` — no SparkSession is
-started (``SilverData`` is never instantiated); only ``read_sql_file`` and the
-``.format(...)`` contract of the query files are exercised."""
+"""Tests for Silver helpers without starting a SparkSession."""
+
+from unittest.mock import Mock, call
 
 import pytest
 
@@ -43,3 +43,17 @@ def test_driver_statistic_is_str_formattable():
 def test_missing_query_file_raises():
     with pytest.raises(FileNotFoundError):
         read_sql_file("does_not_exist")
+
+
+def test_driver_statistics_reuses_cached_results_for_all_windows():
+    silver = SilverData.__new__(SilverData)
+    silver.cache_results = Mock()
+    silver.driver_n_race = Mock()
+
+    silver.driver_statistics(rounds=(5, 10))
+
+    silver.cache_results.assert_called_once_with()
+    assert silver.driver_n_race.call_args_list == [
+        call(query_name="driver_statistic", round=5),
+        call(query_name="driver_statistic", round=10),
+    ]

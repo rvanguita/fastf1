@@ -56,12 +56,10 @@ and S3 are all mocked or replaced with `tmp_path`, so `pytest` runs in seconds. 
 a single `main.py`; `app/streamlit` is `main.py` + `data.py` + `analytics.py` + `charts.py`
 (the tests import `analytics` / `data` directly).
 
-CI: `.github/workflows/tests.yml` runs on every `push` and `pull_request` — a `format` job
-(`uvx ruff@0.16.2 format --check .`) plus a `pytest` matrix (one job per uv project,
+CI: `.github/workflows/tests.yml` runs on every `push` and `pull_request` — a quality job
+(`uvx ruff@0.16.2 check .` and `format --check .`) plus a `pytest` matrix (one job per uv project,
 `uv run --locked pytest -q`). `setup-uv` is pinned to `0.12.0` to match the root `uv_build`
-constraint; ruff is pinned to `0.16.2` (matches the root dep). `ruff check` (lint) is **not** in
-CI — the `# %%` script modules carry ~16 long-standing findings; only `ruff format` is kept
-clean.
+constraint; ruff is pinned to `0.16.2` (matches the root dep).
 
 Each app has its own Dockerfile and is built independently by `docker-compose.yml`:
 - `app/api` — FastAPI service, own `pyproject.toml`/`uv.lock`
@@ -81,7 +79,7 @@ Config is entirely via env vars (loaded from `.env`, which is gitignored — the
 
 Key vars: `PATH_RAW`, `PATH_BRONZE`, `PATH_SILVER`, `PATH_QUERIES` (data lake layer paths + SQL directory), `MLFLOW_URI`, `MLFLOW_MODEL_REGISTERED`, `MLFLOW_EXPERIMENT_NAME`, `API_PORT`, `MYSQL_HOST`/`MYSQL_PORT`/`MYSQL_USER`/`MYSQL_PASSWORD`/`MYSQL_ID_TABLE` (used by `src/sender_local.py` to mirror Bronze/Silver Delta tables into MySQL), `AWS_KEY`/`AWS_SECRET_KEY` (used by `src/sender.py` for S3 upload of raw Parquet files).
 
-The Streamlit container additionally needs `TABLE_PATH_SILVER` and `TABLE_PATH_BRONZE` (paths as mounted read-only inside that container, not the same as `PATH_SILVER`/`PATH_BRONZE`) and reaches the API at `http://api-driver-champion:{API_PORT}` (Docker Compose service name), not localhost.
+The Streamlit container additionally uses `TABLE_PATH_SILVER` and `TABLE_PATH_BRONZE` (paths as mounted read-only inside that container, not the same as `PATH_SILVER`/`PATH_BRONZE`) and reaches the API at `http://api-driver-champion:{API_PORT}` (Docker Compose service name), not localhost. `API_URL` can override that address for local execution.
 
 ## Architecture
 
@@ -91,7 +89,7 @@ The DAG (`dags/data_pipeline.py`, `formula_one_data_pipeline`) wires these stage
 
 1. **Raw** (`src/extract_data.py`, `ExtractData`): pulls each year/round/session (identifiers `"R"` race, `"S"` sprint) from FastF1, flattens session results into a DataFrame, and writes one Parquet file per `{year}_{round:02}_{identifier}.parquet` under `PATH_RAW/results`. Skips files that already exist unless `reload_data=True` (which backfills from 1980 to present). Sleeps between requests to be polite to the FastF1/Ergast backend.
 
-2. **Bronze** (`src/spark_session.py`, `consolidate_data`): reads all Raw Parquet files with Spark and writes a single coalesced Delta table at `PATH_BRONZE/results` (mode `overwrite`). `spark_session()` and `spark_save_table()` here are the shared Spark/Delta helpers used by the Silver layer too.
+2. **Bronze** (`src/spark_session.py`, `consolidate_data`): reads all Raw Parquet files with Spark and overwrites the Delta table at `PATH_BRONZE/results`. `spark_session()` and `spark_save_table()` here are the shared Spark/Delta helpers used by the Silver layer too; writes preserve Spark's partitioning unless `output_partitions` is explicitly supplied.
 
 3. **Silver** (`src/silver_data.py`, `SilverData`): loads SQL from `PATH_QUERIES/*.sql` (via `src/queries/`) and runs it against Spark SQL temp views created from Bronze/Silver Delta tables. Produces:
    - `champions` (`champions.sql`) — one row per year: the points leader, `rank_driver`.
@@ -107,18 +105,18 @@ All Silver SQL files are read as raw strings and `.format()`-ed (not parameteriz
 
 ### Model training
 
-`src/train_driver_champion.py` is a script-notebook (uses `# %%` cell markers, meant to be run interactively, e.g. in Jupyter/VS Code). It reads `tb_abt` from Silver, builds a time-based split (train < 2024, test == 2024, out-of-time == 2025), fits a `SimpleImputer` + `RandomForestClassifier` sklearn pipeline predicting `flChampion`, logs metrics/artifacts/model to MLflow, then retrains on the full dataset before registering. Feature columns are `df.iloc[:, 3:]` — i.e. everything after the first 3 columns (`dt_ref`, `DriverId`, label-adjacent columns) — so column order in `tb_abt.sql` matters.
+`src/train_driver_champion.py` reads `tb_abt` from Silver, filters the current/incomplete season in Spark before collecting to pandas, performs rolling-origin backtests, fits a `SimpleImputer` + `RandomForestClassifier` pipeline, calibrates probabilities and logs the model plus model card to MLflow. Feature selection is name-based through `NON_FEATURES`, so column order is not part of the contract.
 
 ### Serving layer
 
-- **`app/api/main.py`** (FastAPI): serves `MLFLOW_MODEL_REGISTERED`. `model_find` caches the loaded model for `MODEL_CACHE_TTL` seconds (env, default 300) — `_load_model` does the actual registry fetch — so most requests skip the MLflow round-trip; a newly registered version is picked up once the entry goes stale. `POST /predict` predicts win probability and returns a dict keyed by the caller-supplied `id` (every row needs an `id`; features are selected via `model.feature_names_in_`). `GET /model_info` returns `{n_features, features, importances, classes}` — `_feature_importances` walks a `Pipeline` for the step exposing `feature_importances_` (the RandomForest).
+- **`app/api/main.py`** (FastAPI): serves `MLFLOW_MODEL_REGISTERED`. `model_find` caches the loaded model for `MODEL_CACHE_TTL` seconds. `POST /v1/predict` normalizes candidates per snapshot and accepts `include_intervals` (default `true`); disabling it skips member-level ensemble scoring. The legacy `/predict` contract remains unchanged.
 
-- **`app/streamlit/`** (dashboard) — four modules: `main.py` (page config, sidebar, layout), `data.py` (Delta reads + API calls + `st.cache_data` wrappers), `analytics.py` (pure pandas: `compute_driver_stats` / `compute_team_stats` / `compute_reliability` / `compute_teammate_h2h` / `compute_momentum` / `build_insights` / `top_factors`), `charts.py` (theme-aware Plotly builders via `_template()` = light/dark from `st.get_option("theme.base")`). `data.load_predictions(year)` reads `tb_abt` **for one season**, sends only that season's rows to `/predict` (a `-10000`-filled copy — the display frame keeps nulls), and returns them enriched with Bronze driver metadata; an unreachable API degrades to a notice, not a traceback. Layout: an always-visible header (championship strip · top-5 probability cards with headshots · auto `build_insights` bullets) over four tabs — `🔮 Prediction` (win-prob-over-time, momentum, explainability), `📅 Season` (snapshot, points, progression, recent races, heatmap), `🔬 Deep Dives` (drivers / constructors / teammates / quali & reliability), `📋 Data`.
+- **`app/streamlit/`** (dashboard) — reads Delta with season predicates and column projection, keyed by the current Delta version so caches refresh after a table update. Each page loads only its own dependencies; Campeonato and Comparador never call the prediction API. `load_predictions(year)` requests point estimates without ensemble intervals and degrades safely when the API or ABT is unavailable.
 
 ### Spark/Delta conventions
 
-- `spark_save_table()` always does `.coalesce(1).write.format("delta").mode("overwrite")` — every Silver/Bronze table is a single-file full overwrite, not an incremental/append write. There is no partitioning or merge/upsert logic anywhere in the pipeline.
-- Every `SilverData` operation opens its own `SparkSession` (`spark_session()` inside `__init__`); the DAG explicitly calls `.stop()` in a `finally` block after each task group's work, since Airflow tasks in this DAG run in-process (not via `SparkSubmitOperator`).
+- `spark_save_table()` performs a full overwrite with schema replacement but does not force `coalesce(1)`; `output_partitions` is available for explicit control. There is still no merge/upsert processing.
+- Each Airflow task owns and closes its `SparkSession`; the five rolling-statistic windows share one session and a cached Bronze view within their task.
 - Delta tables are read into Spark SQL via `createOrReplaceTempView`, so all Silver transformations are plain Spark SQL against `PATH_QUERIES/*.sql`, not DataFrame API chains.
 
 ### Airflow specifics

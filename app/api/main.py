@@ -117,7 +117,9 @@ def _ensemble_scores(model, frame: pd.DataFrame) -> list[np.ndarray]:
     return members
 
 
-def _prediction_payload(model, frame: pd.DataFrame) -> tuple[dict, dict]:
+def _prediction_payload(
+    model, frame: pd.DataFrame, *, include_intervals: bool = True
+) -> tuple[dict, dict]:
     missing = [column for column in model.feature_names_in_ if column not in frame]
     if missing:
         raise HTTPException(
@@ -127,26 +129,35 @@ def _prediction_payload(model, frame: pd.DataFrame) -> tuple[dict, dict]:
     raw = _positive_probability(model, features)
     groups = _groups(frame)
     normalized = _normalize(raw, groups)
-    member_scores = _ensemble_scores(model, features)
-    if member_scores:
-        member_probabilities = np.vstack(
-            [_normalize(scores, groups) for scores in member_scores]
-        )
-        lower = np.quantile(member_probabilities, 0.10, axis=0)
-        upper = np.quantile(member_probabilities, 0.90, axis=0)
-        method = "ensemble_p10_p90"
+    lower = upper = None
+    if include_intervals:
+        member_scores = _ensemble_scores(model, features)
+        if member_scores:
+            member_probabilities = np.vstack(
+                [_normalize(scores, groups) for scores in member_scores]
+            )
+            lower = np.quantile(member_probabilities, 0.10, axis=0)
+            upper = np.quantile(member_probabilities, 0.90, axis=0)
+            method = "ensemble_p10_p90"
+        else:
+            lower = upper = normalized
+            method = "point_estimate"
     else:
-        lower = upper = normalized
-        method = "point_estimate"
-    predictions = {
-        str(identifier): {
+        method = "not_requested"
+    predictions = {}
+    for i, identifier in enumerate(frame["id"]):
+        prediction = {
             "raw_score": float(raw[i]),
             "probability": float(normalized[i]),
-            "lower": float(lower[i]),
-            "upper": float(upper[i]),
         }
-        for i, identifier in enumerate(frame["id"])
-    }
+        if lower is not None and upper is not None:
+            prediction.update(
+                {
+                    "lower": float(lower[i]),
+                    "upper": float(upper[i]),
+                }
+            )
+        predictions[str(identifier)] = prediction
     return predictions, {
         "normalization": "within_prediction_group",
         "interval_method": method,
@@ -222,6 +233,7 @@ def _shap_explanations(model, frame: pd.DataFrame, top_n: int) -> dict:
 
 class PredictRequest(BaseModel):
     values: list[dict]
+    include_intervals: bool = True
 
 
 class ExplainRequest(PredictRequest):
@@ -288,7 +300,9 @@ def predict_v1(body: PredictRequest):
     if not body.values:
         raise HTTPException(status_code=400, detail="No features provided")
     frame = pd.DataFrame(body.values)
-    predictions, metadata = _prediction_payload(model, frame)
+    predictions, metadata = _prediction_payload(
+        model, frame, include_intervals=body.include_intervals
+    )
     metadata.update(
         {"model_name": MLFLOW_MODEL_REGISTERED, "status": _model_card(model)["status"]}
     )

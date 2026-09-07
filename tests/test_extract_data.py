@@ -86,10 +86,23 @@ class TestPrepareData:
 
 
 class TestLoops:
-    def test_process_years_returns_last_flag(self, extractor, monkeypatch):
+    def test_process_years_returns_true_when_any_year_has_new_data(
+        self, extractor, monkeypatch
+    ):
         monkeypatch.setattr("src.extract_data.time.sleep", lambda *_: None)
-        monkeypatch.setattr(extractor, "process_data", lambda *a, **k: True)
+        extractor.years = [2023, 2024]
+        results = iter([True, False])
+        monkeypatch.setattr(extractor, "process_identifiers", lambda *_: next(results))
         assert extractor.process_years() is True
+
+    def test_process_identifiers_returns_true_when_any_session_has_new_data(
+        self, extractor, monkeypatch
+    ):
+        monkeypatch.setattr("src.extract_data.time.sleep", lambda *_: None)
+        extractor.identifiers = ["R"]
+        results = iter([True, *([False] * 28)])
+        monkeypatch.setattr(extractor, "process_data", lambda *_: next(results))
+        assert extractor.process_identifiers(2024) is True
 
     def test_process_years_empty_years_does_not_raise(self, extractor, monkeypatch):
         monkeypatch.setattr("src.extract_data.time.sleep", lambda *_: None)

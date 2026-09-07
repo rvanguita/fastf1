@@ -7,7 +7,7 @@ performance, and analytical requirements improve.
 """
 
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 
 from airflow.sdk import (
     Asset,
@@ -110,7 +110,7 @@ SILVER_MART_STANDINGS = Asset(
     dag_id="data-pipeline",
     description="Raw, Bronze, and Silver data pipeline",
     schedule="0 0 * * 1",
-    start_date=datetime(2026, 7, 28),
+    start_date=datetime(2026, 7, 28, tzinfo=UTC),
     catchup=False,
     max_active_runs=1,
     tags=["f1", "etl"],
@@ -136,7 +136,7 @@ def formula_one_data_pipeline() -> None:
         # def has_new_data(updated: bool) -> bool:
         #     return updated
 
-        extracted = extract_fastf1()
+        extract_fastf1()
         # has_new_data(extracted)
 
     # -----------------------------------------------------------------------
@@ -203,15 +203,11 @@ def formula_one_data_pipeline() -> None:
                 ],
             )
             def create_driver_statistic() -> None:
-                rounds = [5, 10, 20, 40, 50]
-                for round in rounds:
-                    silver_data = SilverData()
-                    try:
-                        query_name = "driver_statistic"
-
-                        silver_data.driver_n_race(query_name=query_name, round=round)
-                    finally:
-                        silver_data.stop()
+                silver_data = SilverData()
+                try:
+                    silver_data.driver_statistics()
+                finally:
+                    silver_data.stop()
 
             create_driver_statistic()
 
@@ -284,15 +280,13 @@ def formula_one_data_pipeline() -> None:
             create_analytical_marts()
 
         champions = champions_group()
-        drivers_statistics_group = driver_statistics_group()
-        driver_all_statistic = driver_consolidate_statistic()
+        driver_statistics = driver_statistics_group()
+        driver_all_statistics = driver_consolidate_statistic()
         abt = abt_group()
-        analytical_marts = analytical_marts_group()
+        analytical_marts_group()
 
-        champions
-        drivers_statistics_group >> driver_all_statistic
-        [champions, driver_all_statistic] >> abt
-        analytical_marts
+        driver_statistics >> driver_all_statistics
+        [champions, driver_all_statistics] >> abt
 
     @task(task_id="sender_mysql")
     def sender_mysql() -> None:

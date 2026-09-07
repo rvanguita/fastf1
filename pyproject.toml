@@ -1,7 +1,7 @@
 [project]
 name = "lake-fastf1"
 version = "0.1.0"
-description = "Add your description here"
+description = "End-to-end Formula 1 data lakehouse with Spark, Airflow, MLflow, FastAPI and Streamlit"
 readme = "README.md"
 authors = [
     { name = "Rene", email = "renevajr@gmail.com" }
