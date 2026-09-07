@@ -17,6 +17,7 @@ jobs:
         with:
           version: "0.12.0"
           enable-cache: true
+      - run: uvx ruff@0.16.2 check .
       - run: uvx ruff@0.16.2 format --check .
 
   pytest:

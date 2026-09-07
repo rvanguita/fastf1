@@ -264,6 +264,8 @@ def train_and_log(frame: pd.DataFrame):
 
 
 def main() -> None:
+    from pyspark.sql import functions as F
+
     from src.spark_session import spark_session
 
     spark = spark_session()
@@ -271,6 +273,7 @@ def main() -> None:
         frame = (
             spark.read.format("delta")
             .load(f"{os.environ['PATH_SILVER']}/tb_abt")
+            .filter(F.year("dt_ref") < datetime.now(UTC).year)
             .toPandas()
         )
     finally:

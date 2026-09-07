@@ -3,6 +3,7 @@
 from unittest.mock import Mock
 
 import pytest
+from boto3.exceptions import S3UploadFailedError
 
 import src.sender as sender_mod
 from src.sender import Sender
@@ -31,7 +32,7 @@ class TestProcessFile:
     def test_returns_false_and_keeps_file_on_error(self, sender, tmp_path):
         f = tmp_path / "2024_02_R.parquet"
         f.write_bytes(b"data")
-        sender.s3.upload_file.side_effect = RuntimeError("network down")
+        sender.s3.upload_file.side_effect = S3UploadFailedError("network down")
 
         assert sender.process_file(str(f)) is False
         assert f.exists()

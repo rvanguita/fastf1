@@ -6,6 +6,7 @@ tests.
 """
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -105,6 +106,31 @@ def test_predict_v1_normalizes_each_snapshot(client, fake_model):
     predictions = response.json()["predictions"]
     assert sum(item["probability"] for item in predictions.values()) == pytest.approx(1)
     assert predictions["2024-01-01_a"]["raw_score"] == pytest.approx(0.7)
+    assert "lower" in predictions["2024-01-01_a"]
+
+
+def test_predict_v1_skips_ensemble_when_intervals_are_disabled(
+    client, fake_model, monkeypatch
+):
+    score_members = Mock()
+    monkeypatch.setattr(main, "_ensemble_scores", score_members)
+
+    response = client.post(
+        "/v1/predict",
+        json={
+            "values": [
+                {"id": "2024-01-01_a", "f1": 1, "f2": 2},
+                {"id": "2024-01-01_b", "f1": 3, "f2": 4},
+            ],
+            "include_intervals": False,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    score_members.assert_not_called()
+    assert body["metadata"]["interval_method"] == "not_requested"
+    assert "lower" not in body["predictions"]["2024-01-01_a"]
 
 
 def test_model_card_has_safe_defaults(client, fake_model):

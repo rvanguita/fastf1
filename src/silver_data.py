@@ -24,6 +24,10 @@ class SilverData:
     def stop(self):
         self.spark.stop()
 
+    def cache_results(self) -> None:
+        """Mantém a Bronze em memória durante transformações sequenciais."""
+        self.spark.catalog.cacheTable("results")
+
     def spark_view_table(self, path, table_name):
         table_view = self.spark.read.format("delta").load(path)
         table_view.createOrReplaceTempView(table_name)
@@ -41,6 +45,12 @@ class SilverData:
         )
 
         spark_save_table(f"{PATH_SILVER}/{query_name}_{round}", df)
+
+    def driver_statistics(self, rounds: tuple[int, ...] = (5, 10, 20, 40, 50)) -> None:
+        """Calcula todas as janelas reutilizando a sessão e a Bronze em cache."""
+        self.cache_results()
+        for round in rounds:
+            self.driver_n_race(query_name="driver_statistic", round=round)
 
     def consolidate_drivers_statistic(
         self,
@@ -147,16 +157,7 @@ def main():
     silver_data.read_save_query("champions")
 
     # silver_data = SilverData()
-    query_name = "driver_statistic"
-    rounds = [5, 10, 20, 40, 50]
-
-    # silver_data.sessions_last_n_race(query_name, rounds)
-    # silver_data = SilverData()
-    silver_data.driver_n_race(query_name, rounds[0])
-    silver_data.driver_n_race(query_name, rounds[1])
-    silver_data.driver_n_race(query_name, rounds[2])
-    silver_data.driver_n_race(query_name, rounds[3])
-    silver_data.driver_n_race(query_name, rounds[4])
+    silver_data.driver_statistics()
 
     # silver_data = SilverData()
     (silver_data.consolidate_drivers_statistic())

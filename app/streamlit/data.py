@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import os
+from datetime import date
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import requests
 import streamlit as st
 from deltalake import DeltaTable
+from deltalake.exceptions import DeltaError
 
 import analytics
 
-URI_API = f"http://api-driver-champion:{os.environ['API_PORT']}"
-TABLE_PATH_SILVER = os.environ["TABLE_PATH_SILVER"]
-TABLE_PATH_BRONZE = os.environ["TABLE_PATH_BRONZE"]
+URI_API = (
+    os.getenv("API_URL")
+    or f"http://api-driver-champion:{os.getenv('API_PORT', '5002')}"
+).rstrip("/")
+TABLE_PATH_SILVER = os.getenv("TABLE_PATH_SILVER", "/data/silver/tb_abt")
+TABLE_PATH_BRONZE = os.getenv("TABLE_PATH_BRONZE", "/data/bronze/results")
 _SILVER_ROOT = Path(TABLE_PATH_SILVER).parent
 TABLE_PATH_MART_DRIVER_ROUND = os.environ.get(
     "TABLE_PATH_MART_DRIVER_ROUND", str(_SILVER_ROOT / "mart_driver_round")
@@ -24,6 +30,27 @@ TABLE_PATH_MART_STANDINGS = os.environ.get(
 )
 _NON_FEATURE = {"dt_ref", "DriverId", "Year", "id", "flChampion"}
 _MODEL_FILL = -10000
+_BRONZE_ANALYTICS_COLUMNS = (
+    "Year",
+    "Date",
+    "Mode",
+    "RoundNumber",
+    "EventName",
+    "DriverId",
+    "FullName",
+    "Abbreviation",
+    "CountryCode",
+    "HeadshotUrl",
+    "TeamId",
+    "TeamName",
+    "TeamColor",
+    "Position",
+    "ClassifiedPosition",
+    "GridPosition",
+    "Points",
+    "Status",
+)
+DeltaFilter = tuple[str, str, Any]
 
 
 def predict_legacy(values: pd.DataFrame) -> dict:
@@ -41,10 +68,15 @@ def predict(values: pd.DataFrame) -> dict:
     return predict_legacy(values)
 
 
-def predict_v1(values: pd.DataFrame) -> tuple[dict, dict]:
+def predict_v1(
+    values: pd.DataFrame, *, include_intervals: bool = False
+) -> tuple[dict, dict]:
     response = requests.post(
         f"{URI_API}/v1/predict",
-        json={"values": values.to_dict(orient="records")},
+        json={
+            "values": values.to_dict(orient="records"),
+            "include_intervals": include_intervals,
+        },
         timeout=60,
     )
     response.raise_for_status()
@@ -85,40 +117,76 @@ def explain(values: pd.DataFrame, top_n: int = 10) -> dict:
         return {}
 
 
+def _delta_version(path: str, *, optional: bool = False) -> int | None:
+    try:
+        return DeltaTable(path).version()
+    except (DeltaError, OSError):
+        if optional:
+            return None
+        raise
+
+
 @st.cache_data(ttl="1d")
-def load_bronze() -> pd.DataFrame:
-    df = DeltaTable(TABLE_PATH_BRONZE).to_pyarrow_table().to_pandas()
-    df["TeamColor"] = df["TeamColor"].apply(analytics.format_color)
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+def _read_delta(
+    path: str,
+    version: int,
+    columns: tuple[str, ...] | None = None,
+    filters: tuple[DeltaFilter, ...] = (),
+) -> pd.DataFrame:
+    """Lê uma versão Delta com projeção/predicados incluídos na chave de cache."""
+    table = DeltaTable(path, version=version).to_pyarrow_table(
+        columns=list(columns) if columns else None,
+        filters=list(filters) if filters else None,
+    )
+    return table.to_pandas()
+
+
+def load_bronze(
+    year: int | None = None, columns: tuple[str, ...] | None = None
+) -> pd.DataFrame:
+    filters: tuple[DeltaFilter, ...] = (("Year", "=", year),) if year else ()
+    version = _delta_version(TABLE_PATH_BRONZE)
+    assert version is not None
+    df = _read_delta(TABLE_PATH_BRONZE, version, columns, filters)
+    if "TeamColor" in df:
+        df["TeamColor"] = df["TeamColor"].apply(analytics.format_color)
+    if "Date" in df:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     return df
 
 
-@st.cache_data(ttl="1d")
-def races_frame() -> pd.DataFrame:
+def races_frame(year: int | None = None) -> pd.DataFrame:
     """Todas as sessões pontuáveis; a camada semântica separa Race e Sprint."""
-    return load_bronze().copy()
+    return load_bronze(year, columns=_BRONZE_ANALYTICS_COLUMNS).copy()
 
 
-@st.cache_data(ttl="1d")
-def _abt_raw() -> pd.DataFrame:
-    raw = DeltaTable(TABLE_PATH_SILVER).to_pyarrow_table().to_pandas()
+def _abt_raw(year: int | None = None) -> pd.DataFrame:
+    version = _delta_version(TABLE_PATH_SILVER, optional=True)
+    if version is None:
+        return pd.DataFrame(columns=["dt_ref", "Year"])
+    filters: tuple[DeltaFilter, ...] = ()
+    if year is not None:
+        filters = (
+            ("dt_ref", ">=", date(year, 1, 1)),
+            ("dt_ref", "<", date(year + 1, 1, 1)),
+        )
+    raw = _read_delta(TABLE_PATH_SILVER, version, filters=filters)
     raw["dt_ref"] = pd.to_datetime(raw["dt_ref"], errors="coerce")
     raw["Year"] = raw["dt_ref"].dt.year
     return raw
 
 
-@st.cache_data(ttl="1d")
-def _optional_mart(path: str) -> pd.DataFrame:
+def _optional_mart(path: str, year: int) -> pd.DataFrame:
     """Lê um mart novo; instalações ainda não migradas usam o fallback Bronze."""
-    try:
-        return DeltaTable(path).to_pyarrow_table().to_pandas()
-    except Exception:  # noqa: BLE001 - tabela ausente/corrompida aciona fallback seguro
+    version = _delta_version(path, optional=True)
+    if version is None:
         return pd.DataFrame()
+    return _read_delta(path, version, filters=(("season", "=", year),))
 
 
 def _driver_metadata(year: int) -> pd.DataFrame:
-    bronze = load_bronze()
-    season = bronze[(bronze["Year"] == year) & (bronze["Mode"] == "Race")]
+    bronze = races_frame(year)
+    season = bronze[bronze["Mode"] == "Race"]
     cols = [
         "DriverId",
         "TeamName",
@@ -140,10 +208,19 @@ def _driver_metadata(year: int) -> pd.DataFrame:
     return latest.merge(first_race, on="DriverId", how="left")
 
 
-@st.cache_data(ttl="1d")
 def load_predictions(year: int) -> pd.DataFrame:
-    season = _abt_raw()
-    season = season[season["Year"] == year].copy()
+    abt_version = _delta_version(TABLE_PATH_SILVER, optional=True)
+    bronze_version = _delta_version(TABLE_PATH_BRONZE)
+    assert bronze_version is not None
+    return _load_predictions(year, abt_version, bronze_version)
+
+
+@st.cache_data(ttl="15m")
+def _load_predictions(
+    year: int, abt_version: int | None, bronze_version: int
+) -> pd.DataFrame:
+    del abt_version, bronze_version  # invalidam a cache após atualização Delta
+    season = _abt_raw(year).copy()
     if season.empty:
         return season
     feature_cols = [column for column in season if column not in _NON_FEATURE]
@@ -156,7 +233,7 @@ def load_predictions(year: int) -> pd.DataFrame:
     payload = season[["id", "prediction_group", *feature_cols]].fillna(_MODEL_FILL)
     metadata: dict = {}
     try:
-        predictions, metadata = predict_v1(payload)
+        predictions, metadata = predict_v1(payload, include_intervals=False)
         mapped = pd.DataFrame.from_dict(predictions, orient="index")
         mapped.index.name = "id"
         mapped = mapped.reset_index().rename(columns={"probability": "prob_win"})
@@ -183,36 +260,31 @@ def load_predictions(year: int) -> pd.DataFrame:
 
 
 def available_seasons() -> list[int]:
-    return sorted(
-        _abt_raw()["Year"].dropna().astype(int).unique().tolist(), reverse=True
-    )
+    bronze = load_bronze(columns=("Year",))
+    years = pd.to_numeric(bronze["Year"], errors="coerce").dropna().astype(int)
+    return sorted(years.unique().tolist(), reverse=True)
 
 
-@st.cache_data(ttl="1d")
 def driver_stats(year: int) -> pd.DataFrame:
-    return analytics.compute_driver_stats(races_frame(), year)
+    return analytics.compute_driver_stats(races_frame(year), year)
 
 
-@st.cache_data(ttl="1d")
 def team_stats(year: int) -> pd.DataFrame:
-    return analytics.compute_team_stats(races_frame(), year)
+    return analytics.compute_team_stats(races_frame(year), year)
 
 
-@st.cache_data(ttl="1d")
 def reliability(year: int) -> pd.DataFrame:
-    return analytics.compute_reliability(races_frame(), year)
+    return analytics.compute_reliability(races_frame(year), year)
 
 
-@st.cache_data(ttl="1d")
 def teammate_h2h(year: int) -> pd.DataFrame:
-    return analytics.compute_teammate_h2h(races_frame(), year)
+    return analytics.compute_teammate_h2h(races_frame(year), year)
 
 
-@st.cache_data(ttl="1d")
 def standings_history(year: int) -> pd.DataFrame:
-    mart = _optional_mart(TABLE_PATH_MART_STANDINGS)
+    mart = _optional_mart(TABLE_PATH_MART_STANDINGS, year)
     if not mart.empty:
-        season = mart[mart["season"] == year].rename(
+        season = mart.rename(
             columns={
                 "driver_id": "DriverId",
                 "driver_name": "FullName",
@@ -229,14 +301,13 @@ def standings_history(year: int) -> pd.DataFrame:
         )
         season["TeamColor"] = season["TeamColor"].map(analytics.format_color)
         return season
-    return analytics.compute_standings_history(races_frame(), year)
+    return analytics.compute_standings_history(races_frame(year), year)
 
 
-@st.cache_data(ttl="1d")
 def results(year: int) -> pd.DataFrame:
-    mart = _optional_mart(TABLE_PATH_MART_DRIVER_ROUND)
+    mart = _optional_mart(TABLE_PATH_MART_DRIVER_ROUND, year)
     if not mart.empty:
-        season = mart[mart["season"] == year].rename(
+        season = mart.rename(
             columns={
                 "driver_id": "DriverId",
                 "driver_name": "FullName",
@@ -254,6 +325,7 @@ def results(year: int) -> pd.DataFrame:
             }
         )
         season["TeamColor"] = season["TeamColor"].map(analytics.format_color)
+        season["Gain"] = season["OfficialGrid"] - season["OfficialFinish"]
         season["ResultLabel"] = season["OfficialFinish"].map(
             lambda value: f"P{int(value)}" if pd.notna(value) else ""
         )
@@ -261,18 +333,16 @@ def results(year: int) -> pd.DataFrame:
             "ResultStatus"
         ]
         return season.sort_values(["RoundNumber", "Position"])
-    return analytics.result_matrix(races_frame(), year)
+    return analytics.result_matrix(races_frame(year), year)
 
 
-@st.cache_data(ttl="1d")
 def momentum(year: int, last_n: int = 5) -> pd.DataFrame:
     return analytics.compute_momentum(load_predictions(year), last_n=last_n)
 
 
 def data_health(year: int) -> dict:
-    races = analytics._season_races(races_frame(), year)
-    abt = _abt_raw()
-    season_abt = abt[abt["Year"] == year]
+    races = analytics._season_races(races_frame(year), year)
+    season_abt = _abt_raw(year)
     return {
         "latest_result": races["Date"].max() if not races.empty else None,
         "rounds": int(races["RoundNumber"].nunique()) if not races.empty else 0,

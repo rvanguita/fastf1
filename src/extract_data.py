@@ -1,7 +1,7 @@
 # %%
 import os
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 import fastf1
@@ -10,23 +10,22 @@ import pandas as pd
 fastf1.set_log_level(level=100)
 
 PATH_RAW = os.environ["PATH_RAW"]
-CURRENT_YEAR = datetime.now().year
+CURRENT_YEAR = datetime.now(UTC).year
 
 
 class ExtractData:
     def __init__(
         self,
-        years: list[int] = [CURRENT_YEAR],
+        years: list[int] | None = None,
         reload_data: bool = False,
-        identifiers: list[str] = ["R", "S"],
+        identifiers: list[str] | None = None,
         base_data: str = "results",
     ) -> None:
-
-        self.years = years
+        self.years = list(years) if years is not None else [CURRENT_YEAR]
         if reload_data:
             self.years = [i for i in range(1980, CURRENT_YEAR)]
 
-        self.identifiers = identifiers
+        self.identifiers = list(identifiers) if identifiers is not None else ["R", "S"]
         self.reload_data = reload_data
         self.path_save_data = f"{PATH_RAW}/{base_data}"
 
@@ -79,7 +78,7 @@ class ExtractData:
     def process_years(self) -> bool:
         new_data = False
         for year in self.years:
-            new_data = self.process_identifiers(year)
+            new_data = self.process_identifiers(year) or new_data
             time.sleep(10)
         return new_data
 
@@ -87,7 +86,7 @@ class ExtractData:
         new_data = False
         for identifier in self.identifiers:
             for gp in range(1, 30):
-                new_data = self.process_data(year, gp, identifier)
+                new_data = self.process_data(year, gp, identifier) or new_data
                 # if (not new_data and
                 #         identifier == 'R'):
                 #     return new_data

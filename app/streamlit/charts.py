@@ -30,8 +30,9 @@ def _apply(fig: go.Figure, height: int = 420, *, legend: bool = True) -> go.Figu
         plot_bgcolor="rgba(0,0,0,0)",
         margin={"t": 36, "b": 28, "l": 12, "r": 12},
         font={"family": "Inter, ui-sans-serif, system-ui", "size": 13},
-        hoverlabel={"namelength": -1},
+        hoverlabel={"namelength": -1, "font_size": 13},
         showlegend=legend,
+        legend_title_text="",
     )
     fig.update_xaxes(gridcolor=GRID, zeroline=False, automargin=True)
     fig.update_yaxes(gridcolor=GRID, zeroline=False, automargin=True)
@@ -41,18 +42,25 @@ def _apply(fig: go.Figure, height: int = 420, *, legend: bool = True) -> go.Figu
 def probability_ranking(momentum: pd.DataFrame, n: int = 10) -> go.Figure:
     d = momentum.dropna(subset=["latest"]).head(n).sort_values("latest")
     colors = [d.iloc[i].get("TeamColor", NEUTRAL) for i in range(len(d))]
-    custom = d[["delta_prev", "TeamName"]].to_numpy()
+    d = d.assign(
+        delta_label=d["delta_prev"].map(
+            lambda value: (
+                "sem rodada anterior" if pd.isna(value) else f"{value * 100:+.1f} pp"
+            )
+        )
+    )
+    custom = d[["delta_label", "TeamName"]].to_numpy()
     fig = go.Figure(
         go.Bar(
             x=d["latest"] * 100,
             y=d["FullName"],
             orientation="h",
-            marker={"color": colors},
+            marker={"color": colors, "line": {"color": GRID, "width": 1}},
             text=[f"{v:.1%}" for v in d["latest"]],
             textposition="outside",
             cliponaxis=False,
             customdata=custom,
-            hovertemplate="<b>%{y}</b><br>Chance: %{x:.1f}%<br>Δ rodada: %{customdata[0]:+.1%}<br>%{customdata[1]}<extra></extra>",
+            hovertemplate="<b>%{y}</b><br>Chance: %{x:.1f}%<br>Variação: %{customdata[0]}<br>%{customdata[1]}<extra></extra>",
         )
     )
     fig.update_layout(
@@ -105,7 +113,7 @@ def standings_bar(stats: pd.DataFrame, n: int = 20) -> go.Figure:
             x=d["Points"],
             y=d["FullName"],
             orientation="h",
-            marker_color=d["TeamColor"],
+            marker={"color": d["TeamColor"], "line": {"color": GRID, "width": 1}},
             text=[
                 f"{p:.0f}  ({g:+.0f})" if g else f"{p:.0f}"
                 for p, g in zip(d["Points"], d["Gap"])
@@ -279,6 +287,16 @@ def driver_dumbbell(stats: pd.DataFrame, drivers: list[str]) -> go.Figure:
         ("DNFRate", "Taxa DNF"),
     ]
     names = d["FullName"].to_dict()
+
+    def display_value(metric: str, value: float) -> str:
+        if pd.isna(value):
+            return "—"
+        if metric == "DNFRate":
+            return f"{value:.1%}"
+        if metric in {"AvgGrid", "AvgFinish"}:
+            return f"P{value:.1f}"
+        return f"{value:.0f}"
+
     fig = go.Figure()
     for metric, label in metrics:
         field = stats[metric].dropna()
@@ -310,15 +328,16 @@ def driver_dumbbell(stats: pd.DataFrame, drivers: list[str]) -> go.Figure:
                     name=names[driver],
                     legendgroup=driver,
                     showlegend=metric == "Points",
-                    customdata=[[vals[i][1]]],
-                    hovertemplate=f"<b>{names[driver]}</b><br>{label}: %{{customdata[0]:.2f}}<extra></extra>",
+                    customdata=[[display_value(metric, vals[i][1])]],
+                    hovertemplate=f"<b>{names[driver]}</b><br>{label}: %{{customdata[0]}}<extra></extra>",
                 )
             )
     fig.update_layout(
         xaxis={
-            "title": "Desempenho relativo no grid da temporada",
+            "title": "Desempenho relativo · melhor à direita",
             "range": [-5, 105],
-            "ticksuffix": "%",
+            "tickvals": [0, 50, 100],
+            "ticktext": ["Pior", "Médio", "Melhor"],
         },
         yaxis_title="",
         legend={"orientation": "h", "y": -0.23},
@@ -347,6 +366,8 @@ def constructor_points(teams: pd.DataFrame) -> go.Figure:
 
 def teammate_duels(h2h: pd.DataFrame) -> go.Figure:
     d = h2h.sort_values("PointsA")
+    limit = max(1, int(d[["RaceWinsA", "RaceWinsB"]].to_numpy().max()))
+    ticks = list(range(-limit, limit + 1))
     fig = go.Figure()
     fig.add_bar(
         x=d["RaceWinsA"],
@@ -369,9 +390,15 @@ def teammate_duels(h2h: pd.DataFrame) -> go.Figure:
     fig.update_layout(
         barmode="relative",
         xaxis_title="← B à frente · corridas em comum · A à frente →",
+        xaxis={
+            "range": [-limit - 0.5, limit + 0.5],
+            "tickvals": ticks,
+            "ticktext": [str(abs(value)) for value in ticks],
+        },
         yaxis_title="",
         legend={"orientation": "h", "y": -0.22},
     )
+    fig.add_vline(x=0, line_color=GRID, line_width=1)
     return _apply(fig, max(340, len(d) * 46))
 
 

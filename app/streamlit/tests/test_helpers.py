@@ -4,6 +4,8 @@ The ``render_*`` / tab functions need a live Streamlit runtime and are out of
 scope; only the pandas-only logic is exercised here.
 """
 
+import inspect
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import numpy as np
@@ -12,6 +14,7 @@ import pytest
 
 import analytics
 import data
+import main
 
 # ── format_color / short_name / driver_label ───────────────────────────────
 
@@ -99,6 +102,51 @@ def test_predict_calls_api_and_unwraps(monkeypatch):
         json={"values": [{"id": "x", "f": 1}]},
         timeout=60,
     )
+
+
+def test_predict_v1_disables_unused_intervals(monkeypatch):
+    resp = Mock()
+    resp.json.return_value = {"predictions": {}, "metadata": {}}
+    post = Mock(return_value=resp)
+    monkeypatch.setattr(data.requests, "post", post)
+
+    data.predict_v1(pd.DataFrame([{"id": "x", "f": 1}]))
+
+    post.assert_called_once_with(
+        f"{data.URI_API}/v1/predict",
+        json={
+            "values": [{"id": "x", "f": 1}],
+            "include_intervals": False,
+        },
+        timeout=60,
+    )
+
+
+def test_read_delta_pushes_projection_and_filter_and_caches_by_version(monkeypatch):
+    calls = []
+
+    class FakeDeltaTable:
+        def __init__(self, path, version):
+            self.path = path
+            self.version = version
+
+        def to_pyarrow_table(self, *, columns, filters):
+            calls.append((self.path, self.version, columns, filters))
+            return SimpleNamespace(to_pandas=lambda: pd.DataFrame({"Year": [2024]}))
+
+    monkeypatch.setattr(data, "DeltaTable", FakeDeltaTable)
+    data._read_delta.clear()
+    filters = (("Year", "=", 2024),)
+
+    first = data._read_delta("/lake/results", 1, ("Year",), filters)
+    second = data._read_delta("/lake/results", 1, ("Year",), filters)
+    third = data._read_delta("/lake/results", 2, ("Year",), filters)
+
+    assert first.equals(second) and second.equals(third)
+    assert calls == [
+        ("/lake/results", 1, ["Year"], [("Year", "=", 2024)]),
+        ("/lake/results", 2, ["Year"], [("Year", "=", 2024)]),
+    ]
 
 
 # ── season aggregates ──────────────────────────────────────────────────────
@@ -356,3 +404,47 @@ def test_standings_history_carries_points_through_missing_round(bronze):
     history = analytics.compute_standings_history(frame, 2024)
     lando = history[history["DriverId"] == "lando"].set_index("RoundNumber")
     assert lando.loc[2, "CumulativePoints"] == lando.loc[1, "CumulativePoints"]
+
+
+def test_summarize_race_surfaces_podium_gain_and_incidents(bronze):
+    race = bronze[(bronze["Year"] == 2024) & (bronze["RoundNumber"] == 1)].copy()
+    extra = race.iloc[[0]].copy()
+    extra["DriverId"] = "alex"
+    extra["FullName"] = "Alex Driver"
+    extra["Abbreviation"] = "ALE"
+    extra["Position"] = 3.0
+    extra["ClassifiedPosition"] = "3"
+    extra["GridPosition"] = 8.0
+    race = pd.concat([race, extra], ignore_index=True)
+    race.loc[race["DriverId"] == "lando", "ClassifiedPosition"] = "R"
+    results = analytics.result_matrix(race, 2024)
+    summary = analytics.summarize_race(results, 1)
+
+    assert summary["winner"] == "Max V"
+    assert summary["podium"] == "P1 M. V · P3 A. Driver"
+    assert summary["biggest_gainer"] == "A. Driver (+5)"
+    assert summary["incidents"] == 1
+    assert summary["classified"] == 2
+
+
+def test_available_seasons_projects_only_bronze_year(monkeypatch):
+    load_bronze = Mock(return_value=pd.DataFrame({"Year": [2023, 2024, 2024]}))
+    monkeypatch.setattr(data, "load_bronze", load_bronze)
+
+    assert data.available_seasons() == [2024, 2023]
+    load_bronze.assert_called_once_with(columns=("Year",))
+
+
+def test_probability_cards_degrades_when_model_data_is_absent(monkeypatch):
+    info = Mock()
+    monkeypatch.setattr(main.st, "info", info)
+
+    main._probability_cards(pd.DataFrame())
+
+    info.assert_called_once()
+
+
+@pytest.mark.parametrize("page", [main.page_championship, main.page_compare])
+def test_descriptive_pages_do_not_load_predictions(page):
+    """Contrato arquitetural: páginas descritivas não dependem do serving."""
+    assert "load_predictions" not in inspect.getsource(page)
