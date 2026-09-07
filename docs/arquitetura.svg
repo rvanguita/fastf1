@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 606" role="img" aria-label="Diagrama de arquitetura do Lake FastF1: fluxo medalhao FastF1 para Raw, Bronze e Silver orquestrado pelo DAG data-pipeline no Airflow, o treino temporal registrado no MLflow, o serving em FastAPI e Streamlit, e o espelho MySQL com o arquivo Raw em Amazon S3.">
+<rect x="6" y="6" width="988" height="594" rx="16" fill="#f7f4ef" stroke="#ddd4da" stroke-width="1.5" opacity="1"/>
+<text x="30" y="40" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="19" font-weight="700" fill="#2b2530" text-anchor="start">Arquitetura — Lake FastF1</text>
+<text x="30" y="60" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="12.5" font-weight="normal" fill="#6a6068" text-anchor="start">FastF1 → Delta Lake · Airflow · MLflow · FastAPI :5002 · Streamlit :8501 · Airflow :8080</text>
+<rect x="24" y="78" width="952" height="182" rx="14" fill="none" stroke="#5a6b86" stroke-width="1.8" stroke-dasharray="6 5" opacity="1"/>
+<text x="38" y="98" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="10.5" font-weight="700" fill="#5a6b86" text-anchor="start" letter-spacing="1.4">ORQUESTRADO PELO AIRFLOW · DAG data-pipeline · SEG 00:00</text>
+<rect x="40" y="112" width="126" height="116" rx="12" fill="#eeeae4" stroke="#c3b9c0" stroke-width="2" opacity="1"/>
+<text x="103.0" y="140" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="15" font-weight="700" fill="#2b2530" text-anchor="middle">FastF1</text>
+<text x="103.0" y="162" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11" font-weight="normal" fill="#6a6068" text-anchor="middle">Ergast backend</text>
+<text x="103.0" y="179" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11" font-weight="normal" fill="#6a6068" text-anchor="middle">R · S por rodada</text>
+<rect x="188" y="112" width="150" height="116" rx="12" fill="#ece7e1" stroke="#b7ab9e" stroke-width="2" opacity="1"/>
+<text x="263.0" y="140" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="15" font-weight="700" fill="#6b5f52" text-anchor="middle">Raw</text>
+<text x="263.0" y="162" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11" font-weight="normal" fill="#6a6068" text-anchor="middle">Parquet</text>
+<text x="263.0" y="179" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11" font-weight="normal" fill="#6a6068" text-anchor="middle">um arquivo/sessão</text>
+<rect x="360" y="112" width="150" height="116" rx="12" fill="#f3e3d6" stroke="#b06f3a" stroke-width="2" opacity="1"/>
+<text x="435.0" y="140" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="15" font-weight="700" fill="#8a5326" text-anchor="middle">Bronze</text>
+<text x="435.0" y="162" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11" font-weight="normal" fill="#6a6068" text-anchor="middle">Delta</text>
+<text x="435.0" y="179" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11" font-weight="normal" fill="#6a6068" text-anchor="middle">histórico consolidado</text>
+<rect x="532" y="112" width="232" height="116" rx="12" fill="#e9edf1" stroke="#7f8b98" stroke-width="2" opacity="1"/>
+<text x="648.0" y="140" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="15" font-weight="700" fill="#54606b" text-anchor="middle">Silver</text>
+<text x="648.0" y="162" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11" font-weight="normal" fill="#6a6068" text-anchor="middle">champions · driver_statistic_N</text>
+<text x="648.0" y="179" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11" font-weight="normal" fill="#6a6068" text-anchor="middle">driver_all_statistic · tb_abt</text>
+<text x="648.0" y="196" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11" font-weight="normal" fill="#6a6068" text-anchor="middle">mart_driver_round · mart_standings</text>
+<line x1="166" y1="170.0" x2="180" y2="170.0" stroke="#9a9098" stroke-width="2" stroke-linecap="round"/>
+<path d="M180 165.0 L188 170.0 L180 175.0 Z" fill="#9a9098"/>
+<line x1="338" y1="170.0" x2="352" y2="170.0" stroke="#9a9098" stroke-width="2" stroke-linecap="round"/>
+<path d="M352 165.0 L360 170.0 L352 175.0 Z" fill="#9a9098"/>
+<line x1="510" y1="170.0" x2="524" y2="170.0" stroke="#9a9098" stroke-width="2" stroke-linecap="round"/>
+<path d="M524 165.0 L532 170.0 L524 175.0 Z" fill="#9a9098"/>
+<text x="40" y="250" font-family="ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace" font-size="11" font-weight="normal" fill="#5a6b86" text-anchor="start">PATH_RAW · PATH_BRONZE · PATH_SILVER   ·   Delta Lake</text>
+<text x="882.0" y="104" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="10" font-weight="normal" fill="#6a6068" text-anchor="middle" letter-spacing="1">consumidores</text>
+<rect x="792" y="110" width="180" height="28" rx="8" fill="#f0e3ee" stroke="#9c6b90" stroke-width="1.5" opacity="1"/>
+<text x="882.0" y="128" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="10.5" font-weight="normal" fill="#6b2d5c" text-anchor="middle">FastAPI :5002 · /predict · /v1/*</text>
+<rect x="792" y="144" width="180" height="28" rx="8" fill="#f0e3ee" stroke="#9c6b90" stroke-width="1.5" opacity="1"/>
+<text x="882.0" y="162" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="10.5" font-weight="normal" fill="#6b2d5c" text-anchor="middle">Streamlit :8501 · 4 páginas</text>
+<rect x="792" y="178" width="180" height="28" rx="8" fill="#f0e3ee" stroke="#9c6b90" stroke-width="1.5" opacity="1"/>
+<text x="882.0" y="196" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="10.5" font-weight="normal" fill="#6b2d5c" text-anchor="middle">MySQL · espelho para BI</text>
+<rect x="792" y="212" width="180" height="28" rx="8" fill="#f0e3ee" stroke="#9c6b90" stroke-width="1.5" opacity="1"/>
+<text x="882.0" y="230" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="10.5" font-weight="normal" fill="#6b2d5c" text-anchor="middle">Amazon S3 · Raw (manual)</text>
+<line x1="764" y1="170.0" x2="784" y2="170.0" stroke="#9a9098" stroke-width="2" stroke-linecap="round"/>
+<path d="M784 165.0 L792 170.0 L784 175.0 Z" fill="#9a9098"/>
+<text x="30" y="296" font-family="ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace" font-size="14" font-weight="700" fill="#2b2530" text-anchor="start">treino</text>
+<text x="96" y="296" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11.5" font-weight="normal" fill="#6a6068" text-anchor="start">—  fora do DAG · retreina no dataset completo antes de registrar</text>
+<rect x="26" y="308" width="120" height="54" rx="12" fill="#e9edf1" stroke="#7f8b98" stroke-width="2" opacity="1"/>
+<text x="86.0" y="336" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="13" font-weight="700" fill="#54606b" text-anchor="middle">tb_abt</text>
+<text x="86.0" y="358" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="10" font-weight="normal" fill="#6a6068" text-anchor="middle">ABT do modelo</text>
+<rect x="180" y="308" width="320" height="54" rx="12" fill="#e9f1ec" stroke="#84b39c" stroke-width="2" opacity="1"/>
+<text x="340.0" y="336" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="13" font-weight="700" fill="#2f6b52" text-anchor="middle">train_driver_champion.py</text>
+<text x="340.0" y="358" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="9.5" font-weight="normal" fill="#6a6068" text-anchor="middle">split temporal · rolling origin · calibração sigmoide</text>
+<rect x="534" y="308" width="210" height="54" rx="12" fill="#e9f1ec" stroke="#84b39c" stroke-width="2" opacity="1"/>
+<text x="639.0" y="336" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="13" font-weight="700" fill="#2f6b52" text-anchor="middle">MLflow</text>
+<text x="639.0" y="358" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="9.5" font-weight="normal" fill="#6a6068" text-anchor="middle">tracking + registry</text>
+<line x1="146" y1="335.0" x2="172" y2="335.0" stroke="#9a9098" stroke-width="2" stroke-linecap="round"/>
+<path d="M172 330.0 L180 335.0 L172 340.0 Z" fill="#9a9098"/>
+<line x1="500" y1="335.0" x2="526" y2="335.0" stroke="#9a9098" stroke-width="2" stroke-linecap="round"/>
+<path d="M526 330.0 L534 335.0 L526 340.0 Z" fill="#9a9098"/>
+<text x="639" y="378" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="9.5" font-weight="normal" fill="#2f6b52" text-anchor="middle">modelo registrado  →  FastAPI :5002</text>
+<text x="30" y="406" font-family="ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace" font-size="14" font-weight="700" fill="#2b2530" text-anchor="start">airflow dag</text>
+<text x="140" y="406" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="12" font-weight="normal" fill="#6a6068" text-anchor="start">—  data-pipeline · raw » bronze » silver » sender_mysql</text>
+<rect x="26" y="416" width="225" height="124" rx="10" fill="#eef4fb" stroke="#9dc0e6" stroke-width="1.5" opacity="1"/>
+<text x="138.5" y="438" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="12" font-weight="700" fill="#2a5f95" text-anchor="middle">raw</text>
+<line x1="38" y1="446" x2="239" y2="446" stroke="#cfe0f2" stroke-width="1" stroke-linecap="round"/>
+<text x="138.5" y="464" font-family="ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace" font-size="10" font-weight="normal" fill="#33404d" text-anchor="middle">extract_data</text>
+<text x="138.5" y="481" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="9.5" font-weight="normal" fill="#6a6068" text-anchor="middle">FastF1 → Parquet</text>
+<line x1="253" y1="478.0" x2="257" y2="478.0" stroke="#9dc0e6" stroke-width="2" stroke-linecap="round"/>
+<path d="M257 473.0 L265 478.0 L257 483.0 Z" fill="#9dc0e6"/>
+<rect x="267" y="416" width="225" height="124" rx="10" fill="#eef4fb" stroke="#9dc0e6" stroke-width="1.5" opacity="1"/>
+<text x="379.5" y="438" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="12" font-weight="700" fill="#2a5f95" text-anchor="middle">bronze</text>
+<line x1="279" y1="446" x2="480" y2="446" stroke="#cfe0f2" stroke-width="1" stroke-linecap="round"/>
+<text x="379.5" y="464" font-family="ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace" font-size="10" font-weight="normal" fill="#33404d" text-anchor="middle">consolidate_data</text>
+<text x="379.5" y="481" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="9.5" font-weight="normal" fill="#6a6068" text-anchor="middle">Parquet → tabela Delta</text>
+<line x1="494" y1="478.0" x2="498" y2="478.0" stroke="#9dc0e6" stroke-width="2" stroke-linecap="round"/>
+<path d="M498 473.0 L506 478.0 L498 483.0 Z" fill="#9dc0e6"/>
+<rect x="508" y="416" width="225" height="124" rx="10" fill="#eef4fb" stroke="#9dc0e6" stroke-width="1.5" opacity="1"/>
+<text x="620.5" y="438" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="12" font-weight="700" fill="#2a5f95" text-anchor="middle">silver</text>
+<line x1="520" y1="446" x2="721" y2="446" stroke="#cfe0f2" stroke-width="1" stroke-linecap="round"/>
+<text x="620.5" y="464" font-family="ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace" font-size="10" font-weight="normal" fill="#33404d" text-anchor="middle">champions</text>
+<text x="620.5" y="478" font-family="ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace" font-size="10" font-weight="normal" fill="#33404d" text-anchor="middle">driver_statistics</text>
+<text x="620.5" y="492" font-family="ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace" font-size="10" font-weight="normal" fill="#33404d" text-anchor="middle">driver_all_statistic</text>
+<text x="620.5" y="506" font-family="ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace" font-size="10" font-weight="normal" fill="#33404d" text-anchor="middle">abt</text>
+<text x="620.5" y="520" font-family="ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace" font-size="10" font-weight="normal" fill="#33404d" text-anchor="middle">analytical_marts</text>
+<text x="620.5" y="537" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="9.5" font-weight="normal" fill="#6a6068" text-anchor="middle">janelas: 5·10·20·40·50 rodadas</text>
+<line x1="735" y1="478.0" x2="739" y2="478.0" stroke="#9dc0e6" stroke-width="2" stroke-linecap="round"/>
+<path d="M739 473.0 L747 478.0 L739 483.0 Z" fill="#9dc0e6"/>
+<rect x="749" y="416" width="225" height="124" rx="10" fill="#eef4fb" stroke="#9dc0e6" stroke-width="1.5" opacity="1"/>
+<text x="861.5" y="438" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="12" font-weight="700" fill="#2a5f95" text-anchor="middle">sender_mysql</text>
+<line x1="761" y1="446" x2="962" y2="446" stroke="#cfe0f2" stroke-width="1" stroke-linecap="round"/>
+<text x="861.5" y="464" font-family="ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace" font-size="10" font-weight="normal" fill="#33404d" text-anchor="middle">send_layer_to_mysql</text>
+<text x="861.5" y="481" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="9.5" font-weight="normal" fill="#6a6068" text-anchor="middle">Bronze + Silver → MySQL</text>
+<text x="30" y="564" font-family="ui-monospace,'SFMono-Regular',Menlo,Consolas,monospace" font-size="11" font-weight="normal" fill="#8a5326" text-anchor="start">manual · fora do DAG:   python -m src.train_driver_champion    ·    python -m src.sender  →  Amazon S3</text>
+<text x="500.0" y="586" font-family="-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" font-size="11" font-weight="normal" fill="#6a6068" text-anchor="middle">docker compose up  →  Airflow :8080 · FastAPI :5002 · Streamlit :8501      ·      pytest (3 projetos) + ruff format   ·   CI: GitHub Actions</text>
+</svg>

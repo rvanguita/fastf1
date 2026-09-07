@@ -32,49 +32,25 @@ Lake FastF1 nasceu para explorar um problema esportivo como um produto de dados 
 
 ## Arquitetura
 
-```mermaid
-flowchart TD
-    FASTF1["FastF1 / Ergast"]
+![Arquitetura do Lake FastF1: fluxo medalhão FastF1 → Raw → Bronze → Silver orquestrado pelo DAG data-pipeline no Airflow, o treino temporal registrado no MLflow, o serving em FastAPI e Streamlit, e o espelho MySQL com o arquivo Raw em Amazon S3](docs/arquitetura.svg)
 
-    subgraph lake["Lakehouse — arquitetura medalhão"]
-        RAW["Raw<br/>Parquet · um arquivo por sessão"]
-        BRONZE["Bronze<br/>Delta · histórico consolidado"]
-        SILVER["Silver<br/>Delta · champions · driver_statistic_N<br/>driver_all_statistic · tb_abt · marts"]
-    end
+```text
+┌──────── Airflow · DAG data-pipeline · segunda 00:00 · sem catch-up · 1 run ativo ────────┐
+│                                                                                          │
+│  FastF1 ──► Raw (Parquet) ──► Bronze (Delta) ──► Silver (Delta) ──► MySQL (espelho BI)   │
+│                                                                                          │
+│  Silver:  champions · driver_statistic_{5,10,20,40,50} · driver_all_statistic · tb_abt   │
+│           mart_driver_round · mart_standings                                             │
+│                                                                                          │
+└──────────────────────────────────────────────────────────────────────────────────────────┘
 
-    subgraph ml["Modelo"]
-        TRAIN["train_driver_champion.py<br/>split temporal · rolling origin · calibração"]
-        MLFLOW["MLflow<br/>tracking + registry"]
-    end
+  fora do DAG:   Raw ──► src/sender.py ──► Amazon S3            (envio manual)
+                 tb_abt ──► train_driver_champion.py ──► MLflow (tracking + registry)
+                            split temporal · rolling origin · calibração sigmoide
 
-    subgraph serving["Serving"]
-        API["FastAPI :5002<br/>/predict · /v1/predict<br/>/v1/explain · /v1/model-card"]
-        APP["Streamlit :8501<br/>quatro páginas analíticas"]
-    end
-
-    subgraph external["Consumo externo"]
-        MYSQL["MySQL<br/>espelho para BI"]
-        S3["Amazon S3<br/>arquivo Raw · envio manual"]
-    end
-
-    AIRFLOW["Apache Airflow · DAG data-pipeline<br/>semanal (segunda 00:00) · sem catch-up"]
-
-    FASTF1 --> RAW --> BRONZE --> SILVER
-    AIRFLOW -. orquestra .-> RAW
-    AIRFLOW -. orquestra .-> BRONZE
-    AIRFLOW -. orquestra .-> SILVER
-    AIRFLOW -. orquestra .-> MYSQL
-    SILVER -->|tb_abt| TRAIN --> MLFLOW
-    MLFLOW -->|modelo registrado| API
-    BRONZE --> APP
-    SILVER --> APP
-    API <-->|previsões · explicações · model card| APP
-    BRONZE --> MYSQL
-    SILVER --> MYSQL
-    RAW -. envio manual .-> S3
+  serving:   MLflow ──modelo registrado──► FastAPI :5002
+             Bronze + Silver ──leitura direta──► Streamlit :8501  ⇄  FastAPI  (/predict, /v1/*)
 ```
-
-![Fluxo visual de dados atravessando camadas progressivamente mais estruturadas até chegar à análise](img/lakehouse-architecture.webp)
 
 O Airflow coordena o caminho semanal da FastF1 até o espelho MySQL. O envio dos arquivos Raw ao Amazon S3 é manual e opcional; o treino temporal também ocorre fora do DAG e registra seus artefatos no MLflow. Para compor o produto analítico, o Streamlit lê Bronze, Silver e marts diretamente enquanto consulta previsões, explicações e o model card publicados pela FastAPI.
 
