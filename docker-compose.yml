@@ -35,6 +35,8 @@ services:
     environment:
       TABLE_PATH_SILVER: "/data/silver/tb_abt"
       TABLE_PATH_BRONZE: "/data/bronze/results"
+      TABLE_PATH_MART_DRIVER_ROUND: "/data/silver/mart_driver_round"
+      TABLE_PATH_MART_STANDINGS: "/data/silver/mart_standings"
 
     volumes:
       - ./data/silver/tb_abt:/data/silver/tb_abt:ro

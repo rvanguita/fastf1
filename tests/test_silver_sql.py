@@ -18,7 +18,16 @@ def test_read_sql_file_returns_query_text():
     assert "rank_driver" in query
 
 
-@pytest.mark.parametrize("name", ["champions", "driver_statistic", "tb_abt"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "champions",
+        "driver_statistic",
+        "tb_abt",
+        "mart_driver_round",
+        "mart_standings",
+    ],
+)
 def test_query_file_is_non_empty(name):
     assert read_sql_file(name).strip()
 
