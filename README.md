@@ -161,7 +161,28 @@ Consulte `.env.example` para os valores esperados. Os caminhos `TABLE_PATH_*` do
 
 O alvo é identificar o campeão de pilotos a partir do histórico disponível em cada data de referência.
 
-![Snapshots históricos e trajetórias probabilísticas convergindo após validação e calibração](img/model-intelligence.webp)
+![Modelo do Lake FastF1: preparação da tb_abt, backtest rolling-origin por temporada, estimador RandomForest com imputação constante e calibração sigmoide fora do tempo, registro no MLflow e serving em /v1/predict, /v1/explain e /v1/model-card](docs/modelo.svg)
+
+```text
+┌───────────── Modelo · alvo flChampion · features = janelas móveis 5·10·20·40·50 ─────────────┐
+│                                                                                              │
+│  tb_abt (Silver) ──► prepara: Year < atual · ordena dt_ref, DriverId · exige 2 classes       │
+│               │                                                                              │
+│               ├──► backtest rolling-origin  (mín. 8 temporadas de treino)                    │
+│               │       treina ≤ N-1  ·  testa a temporada N                                   │
+│               │       métricas: ROC-AUC · Brier · log loss · acerto top-1 · baseline pts20   │
+│               │                                                                              │
+│               └──► estimador final  (refeito em todo o histórico concluído)                  │
+│                       SimpleImputer(-10000) ──► RandomForest(400, min_leaf 40)               │
+│                          ──► calibrador sigmoide  (LogisticRegression no ano N)              │
+│                             ──► TemporalCalibratedClassifier                                 │
+│                                                                                              │
+└──────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  registro:  MLflow  ──►  métricas · model_card.json · dataset tb_abt_completed · registry
+  serving:   /v1/predict (score · prob · limites)  ·  /v1/explain (SHAP)  ·  /v1/model-card
+  status:    validated  se  acerto médio do campeão  >  baseline de pontos recentes  ·  senão  experimental
+```
 
 - A temporada em andamento é excluída dos rótulos de treino.
 - O universo de candidatos contém apenas pilotos que já participaram da temporada analisada.
