@@ -18,27 +18,30 @@ Lake FastF1 nasceu para explorar um problema esportivo como um produto de dados 
 
 ## Arquitetura
 
-```mermaid
-flowchart LR
-    F[FastF1] -->|resultados| R[(Raw<br/>Parquet)]
-    R --> B[(Bronze<br/>Delta Lake)]
-    B --> S[(Silver<br/>features e marts)]
+```text
+┌────────────────── Airflow DAG: data-pipeline (semanal, segunda-feira 00:00) ───────────────────┐
+│                                                                                                │
+│  FastF1 ──► Raw (Parquet) ──► Bronze (Delta) ──► Silver (Delta: ABT + marts)                   │
+│                                      │                    │                                    │
+│                                      └────────────────────┴──────────► MySQL (espelho para BI) │
+└──────────────────┬─────────────────────────────────────────────────────────────────────────────┘
+                   │ envio manual: src/sender.py
+             ┌─────▼──────┐
+             │ Amazon S3  │
+             └────────────┘
 
-    A[Apache Airflow<br/>execução semanal] -. orquestra .-> R
-    A -. orquestra .-> B
-    A -. orquestra .-> S
-
-    R -. arquivamento manual .-> S3[(Amazon S3)]
-    B --> UI[Streamlit<br/>produto analítico]
-    S --> UI
-    S --> DB[(MySQL<br/>espelho para BI)]
-    S --> T[Treino temporal<br/>scikit-learn]
-    T --> M[MLflow<br/>tracking e registry]
-    M --> API[FastAPI<br/>inferência e model card]
-    API --> UI
+Silver / tb_abt ──► treino temporal ──► MLflow (tracking + registry) ──modelo──► FastAPI :5002
+                    src/train_driver_champion.py                                 ▲
+                                                                                 │
+                                                          /v1/predict            │
+Bronze + Silver + marts ──leitura direta──► Streamlit :8501 ─────────────────────┤
+                                                          /v1/explain            │
+                                                          /v1/model-card ────────┘
 ```
 
 ![Fluxo visual de dados atravessando camadas progressivamente mais estruturadas até chegar à análise](img/lakehouse-architecture.webp)
+
+O Airflow coordena o caminho semanal da FastF1 até o espelho MySQL. O envio dos arquivos Raw ao Amazon S3 é manual e opcional; o treino temporal também ocorre fora do DAG e registra seus artefatos no MLflow. Para compor o produto analítico, o Streamlit lê Bronze, Silver e marts diretamente enquanto consulta previsões, explicações e o model card publicados pela FastAPI.
 
 ### Fluxo dos dados
 
