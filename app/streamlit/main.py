@@ -1,12 +1,8 @@
-"""F1 Champion Win Predictor — Streamlit dashboard.
-
-Layout: an always-visible header (championship strip · top-5 probability cards ·
-auto insights) over four tabs — Prediction, Season, Deep Dives, Data. All data
-access and caching is in ``data.py``; pure aggregates in ``analytics.py``;
-Plotly builders in ``charts.py``.
-"""
+"""Lake FastF1 — produto analítico editorial em Streamlit."""
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import pandas as pd
 import streamlit as st
@@ -15,538 +11,392 @@ import analytics
 import charts
 import data
 
-RECENT_RACES_DEFAULT = 5
+
+@dataclass(frozen=True)
+class Context:
+    season: int
+    window: int
+    drivers: list[str]
+    stats: pd.DataFrame
+    teams: pd.DataFrame
+    races: pd.DataFrame
+    history: pd.DataFrame
+    predictions: pd.DataFrame
+    momentum: pd.DataFrame
 
 
-# ── small render helpers ───────────────────────────────────────────────────
-
-
-def _driver_options(preds: pd.DataFrame) -> tuple[list[str], dict[str, str]]:
-    """(driver_team_id options ordered by latest win prob, {id: label})."""
-    latest = preds["dt_ref"].max()
-    ordered = (
-        preds[preds["dt_ref"] == latest]
-        .sort_values("prob_win", ascending=False)
-        .drop_duplicates("driver_team_id")
+def _css() -> None:
+    st.markdown(
+        """
+        <style>
+        .block-container {padding-top: 2.4rem; padding-bottom: 4rem; max-width: 1500px}
+        h1, h2, h3 {letter-spacing: -.025em}
+        [data-testid="stMetric"] {border-top: 2px solid rgba(128,128,128,.25); padding-top: .7rem}
+        [data-testid="stMetricValue"] {font-weight: 720; letter-spacing: -.035em}
+        .eyebrow {font-size:.72rem; letter-spacing:.12em; text-transform:uppercase; opacity:.62; font-weight:700}
+        .lede {font-size:1.08rem; opacity:.75; max-width:850px; margin-bottom:1.4rem}
+        .insight {border-left:3px solid #ff4b44; padding:.45rem 0 .45rem 1rem; margin:.4rem 0}
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
-    labels = {
-        row["driver_team_id"]: analytics.driver_label(row["FullName"], row["TeamName"])
-        for _, row in ordered.iterrows()
-    }
-    return ordered["driver_team_id"].tolist(), labels
 
 
-def _championship_strip(dstats: pd.DataFrame) -> None:
-    if dstats.empty:
-        return
-    leader = dstats.iloc[0]
-    gap = leader["Points"] - dstats.iloc[1]["Points"] if len(dstats) > 1 else 0.0
-    most_wins = dstats.sort_values("Wins", ascending=False).iloc[0]
+def _page_header(kicker: str, title: str, description: str) -> None:
+    st.markdown(f'<div class="eyebrow">{kicker}</div>', unsafe_allow_html=True)
+    st.title(title)
+    st.markdown(f'<div class="lede">{description}</div>', unsafe_allow_html=True)
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("🏁 Rounds", int(dstats["Races"].max()))
-    c2.metric(
-        "👑 Points leader", leader["FullName"], help=f"{leader['Points']:.0f} pts"
+
+@st.cache_data(ttl="15m")
+def _context(season: int, window: int, drivers: tuple[str, ...]) -> Context:
+    stats = data.driver_stats(season)
+    teams = data.team_stats(season)
+    races = data.results(season)
+    history = data.standings_history(season)
+    predictions = data.load_predictions(season)
+    momentum = (
+        analytics.compute_momentum(predictions, last_n=window)
+        if not predictions.empty and "prob_win" in predictions
+        else pd.DataFrame()
     )
-    c3.metric("📏 Gap to P2", f"{gap:.0f} pts")
-    c4.metric("🥇 Most wins", f"{most_wins['FullName']} ({int(most_wins['Wins'])})")
+    return Context(
+        season,
+        window,
+        list(drivers),
+        stats,
+        teams,
+        races,
+        history,
+        predictions,
+        momentum,
+    )
 
 
-def _probability_cards(momentum: pd.DataFrame, n: int = 5) -> None:
-    if momentum.empty:
-        return
-    top = momentum.dropna(subset=["latest"]).head(n)
-    if top.empty:
-        return
-    for col, (_, row) in zip(st.columns(len(top)), top.iterrows()):
-        with col:
-            url = row.get("HeadshotUrl")
-            if isinstance(url, str) and url.startswith("http"):
-                st.image(url, width=72)
-            delta = row.get("delta_prev")
-            col.metric(
-                label=row.get("FullName", row["DriverId"]),
-                value=f"{row['latest']:.0%}",
-                delta=None if pd.isna(delta) else f"{delta * 100:+.1f} pp",
-                help=row.get("TeamName", ""),
+def _current_context() -> Context:
+    return _context(
+        int(st.session_state["season"]),
+        int(st.session_state["window"]),
+        tuple(st.session_state.get("drivers", [])),
+    )
+
+
+def _global_filters() -> None:
+    seasons = data.available_seasons()
+    with st.sidebar:
+        st.divider()
+        st.caption("CONTEXTO DA ANÁLISE")
+        season = st.selectbox("Temporada", seasons, key="season")
+        stats = data.driver_stats(season)
+        ids = stats["DriverId"].tolist() if "DriverId" in stats else []
+        labels = (
+            stats.set_index("DriverId")
+            .apply(
+                lambda row: analytics.driver_label(row["FullName"], row["TeamName"]),
+                axis=1,
             )
-
-
-def _snapshot(dstats: pd.DataFrame, races_season: pd.DataFrame) -> None:
-    if dstats.empty:
-        st.info("No race data for this season yet.")
-        return
-    leader = dstats.iloc[0]
-    gap = leader["Points"] - dstats.iloc[1]["Points"] if len(dstats) > 1 else 0.0
-    most_wins = dstats.sort_values("Wins", ascending=False).iloc[0]
-
-    latest_round = races_season["RoundNumber"].max()
-    last = races_season[races_season["RoundNumber"] == latest_round].copy()
-    last["Gain"] = last["GridPosition"] - last["Position"]
-    movers = last.dropna(subset=["Gain"])
-    mover = (
-        f"{movers.loc[movers['Gain'].idxmax(), 'Abbreviation']} "
-        f"({movers['Gain'].max():+.0f})"
-        if not movers.empty
-        else "—"
-    )
-
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("🏁 Rounds completed", int(dstats["Races"].max()))
-    c2.metric(
-        "👑 Points leader", leader["FullName"], help=f"{leader['Points']:.0f} pts"
-    )
-    c3.metric("📏 Championship gap", f"{gap:.0f} pts")
-    c4.metric("🥇 Most wins", f"{most_wins['FullName']} ({int(most_wins['Wins'])})")
-    c5.metric("🚀 Biggest mover", mover, help="Grid → finish, last race")
-
-
-def _recent_race_cards(races: pd.DataFrame, n: int) -> None:
-    """Top-5 finishers for each of the last ``n`` race rounds (any season)."""
-    df = races.dropna(subset=["Position"]).copy()
-    df["Position"] = df["Position"].astype(int)
-
-    recent = (
-        df.drop_duplicates(subset=["Year", "RoundNumber"])
-        .sort_values("Date", ascending=False)
-        .head(n)[["Year", "RoundNumber", "EventName", "Date", "Country"]]
-    )
-    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
-
-    for col, (_, rnd) in zip(st.columns(len(recent)), recent.iterrows()):
-        top5 = (
-            df[
-                (df["Year"] == rnd["Year"])
-                & (df["RoundNumber"] == rnd["RoundNumber"])
-                & (df["Position"] <= 5)
-            ]
-            .sort_values("Position")
-            .reset_index(drop=True)
+            .to_dict()
+            if ids
+            else {}
         )
-        with col.container(border=True):
-            st.markdown(f"**{rnd['EventName']}**")
-            st.caption(
-                f"{rnd.get('Country', '')} · {pd.to_datetime(rnd['Date']):%b %d, %Y}"
-            )
-            for _, d in top5.iterrows():
-                pos = int(d["Position"])
-                grid = d["GridPosition"]
-                move = ""
-                if pd.notna(grid):
-                    diff = int(grid) - pos
-                    move = (
-                        f" ▲{diff}"
-                        if diff > 0
-                        else f" ▼{abs(diff)}"
-                        if diff < 0
-                        else ""
-                    )
-                st.markdown(
-                    f"<span style='color:{d['TeamColor'] or charts.FLAT}'>"
-                    f"{medals.get(pos, f'P{pos}')} {d['Abbreviation']}</span>"
-                    f"<span style='float:right;opacity:0.7'>{d['Points']:.0f}{move}</span>",
-                    unsafe_allow_html=True,
-                )
+        current = [
+            driver
+            for driver in st.session_state.get("drivers", ids[:5])
+            if driver in ids
+        ]
+        st.multiselect(
+            "Pilotos em destaque",
+            ids,
+            default=current or ids[:5],
+            format_func=lambda value: labels.get(value, value),
+            key="drivers",
+        )
+        st.slider(
+            "Janela de tendência",
+            3,
+            10,
+            5,
+            key="window",
+            help="Número de rodadas usado para medir a tendência recente.",
+        )
+        st.caption("Resultados FastF1 · atualização semanal")
 
 
-# ── tabs ──────────────────────────────────────────────────────────────────
-
-
-def _tab_prediction(
-    preds: pd.DataFrame, selected: list[str], momentum: pd.DataFrame, last_n: int
-) -> None:
-    sel = preds[preds["driver_team_id"].isin(selected)].copy()
-    if sel.empty:
-        st.warning("Select at least one driver in the sidebar.")
+def _probability_cards(momentum: pd.DataFrame) -> None:
+    top = momentum.dropna(subset=["latest"]).head(4)
+    if top.empty:
+        st.info(
+            "A API preditiva está indisponível. A análise descritiva continua ativa."
+        )
         return
+    cols = st.columns(4)
+    for col, (_, row) in zip(cols, top.iterrows()):
+        delta = row.get("delta_prev")
+        col.metric(
+            row["FullName"],
+            f"{row['latest']:.1%}",
+            None if pd.isna(delta) else f"{delta * 100:+.1f} pp",
+            help=f"{row['TeamName']} · probabilidade normalizada dentro do grid",
+        )
 
-    sel["Driver"] = sel["FullName"].map(analytics.short_name)
-    long_df = sel.rename(columns={"prob_win": "WinProb"})[
-        ["dt_ref", "Driver", "WinProb"]
-    ]
-    color_map = sel.drop_duplicates("Driver").set_index("Driver")["TeamColor"].to_dict()
-    order = (
-        sel[sel["dt_ref"] == sel["dt_ref"].max()]
-        .sort_values("prob_win", ascending=False)["Driver"]
-        .tolist()
+
+def page_overview() -> None:
+    ctx = _current_context()
+    _page_header(
+        "TEMPORADA EM UMA PÁGINA",
+        f"O campeonato de {ctx.season}, agora",
+        "Classificação, disputa pelo título e sinais recentes reunidos sem repetir a mesma informação em formatos diferentes.",
     )
-    st.subheader("Win probability over time")
-    st.plotly_chart(charts.win_prob_lines(long_df, color_map, order), width="stretch")
-
-    st.subheader("Momentum")
+    if ctx.stats.empty:
+        st.warning("Não há resultados para esta temporada.")
+        return
+    leader = ctx.stats.iloc[0]
+    runner = ctx.stats.iloc[1] if len(ctx.stats) > 1 else leader
+    latest_round = int(ctx.races["RoundNumber"].max()) if not ctx.races.empty else 0
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Líder", leader["FullName"], f"{leader['Points']:.0f} pts")
+    k2.metric(
+        "Vantagem",
+        f"{leader['Points'] - runner['Points']:.0f} pts",
+        f"sobre {analytics.short_name(runner['FullName'])}",
+        delta_color="off",
+    )
+    k3.metric("Rodadas concluídas", latest_round)
+    k4.metric(
+        "Vitórias do líder",
+        int(leader["Wins"]),
+        f"{leader['Podiums']:.0f} pódios",
+        delta_color="off",
+    )
+    st.divider()
+    st.subheader("Quem controla a disputa pelo título?")
+    st.caption(
+        "Probabilidades normalizadas por data; os competidores do mesmo snapshot somam 100%."
+    )
+    _probability_cards(ctx.momentum)
+    if not ctx.momentum.empty:
+        st.plotly_chart(charts.probability_ranking(ctx.momentum), width="stretch")
+    st.divider()
     left, right = st.columns([3, 2])
     with left:
-        st.plotly_chart(charts.momentum_bars(momentum), width="stretch")
+        st.subheader("Classificação do campeonato")
+        st.plotly_chart(charts.standings_bar(ctx.stats), width="stretch")
     with right:
-        moves = momentum[momentum["rank_change"].fillna(0) != 0][
-            ["FullName", "rank", "rank_change"]
-        ].copy()
-        moves["rank"] = moves["rank"].astype(int)
-        moves["Move"] = moves["rank_change"].map(
-            lambda c: f"▲ {int(c)}" if c > 0 else f"▼ {int(-c)}"
+        st.subheader("Leituras rápidas")
+        insights = analytics.build_insights(
+            ctx.momentum,
+            data.teammate_h2h(ctx.season),
+            data.reliability(ctx.season),
+            ctx.window,
         )
-        st.caption("Rank changes since previous round")
-        st.dataframe(
-            moves[["FullName", "rank", "Move"]].rename(
-                columns={"FullName": "Driver", "rank": "Rank"}
-            ),
-            hide_index=True,
-            width="stretch",
-        )
-
-    with st.expander("🔬 What drives the prediction (model explainability)"):
-        info = data.model_info()
-        importances = info.get("importances") if info else None
-        if not importances:
-            st.caption("Model info unavailable — start the API to populate this.")
-            return
-        st.plotly_chart(charts.importance_bar(importances, 15), width="stretch")
-
-        latest = preds[preds["dt_ref"] == preds["dt_ref"].max()]
-        feats = [f for f in importances if f in latest.columns]
-        field_median = latest[feats].median(numeric_only=True)
-        who = st.selectbox("Top factors for", options=order, key="explain_driver")
-        drv_row = sel[(sel["Driver"] == who) & (sel["dt_ref"] == sel["dt_ref"].max())]
-        if not drv_row.empty:
-            tf = analytics.top_factors(
-                importances, drv_row.iloc[0][feats], field_median, k=8
+        for insight in insights:
+            st.markdown(f'<div class="insight">{insight}</div>', unsafe_allow_html=True)
+        if not insights:
+            st.caption(
+                "Os insights serão exibidos após três rodadas e uma previsão válida."
             )
-            st.dataframe(tf, hide_index=True, width="stretch")
 
 
-def _tab_season(season: int, last_n: int) -> None:
-    dstats = data.driver_stats(season)
-    races_all = data.races_frame()
-    races_season = races_all[races_all["Year"] == season]
-
-    _snapshot(dstats, races_season)
+def page_championship() -> None:
+    ctx = _current_context()
+    _page_header(
+        "EVOLUÇÃO DA TEMPORADA",
+        "Como o campeonato chegou até aqui?",
+        "Pontos, posições e resultados por rodada. Use os mesmos pilotos em destaque em todos os gráficos.",
+    )
+    if ctx.history.empty:
+        st.warning("Não há histórico para esta temporada.")
+        return
+    selected = ctx.drivers or ctx.stats["DriverId"].head(5).tolist()
+    tab_points, tab_rank = st.tabs(["Pontos acumulados", "Posição no campeonato"])
+    with tab_points:
+        st.plotly_chart(charts.points_history(ctx.history, selected), width="stretch")
+    with tab_rank:
+        st.plotly_chart(charts.rank_bump(ctx.history, selected), width="stretch")
     st.divider()
+    st.subheader("Cada corrida, em contexto")
+    st.caption(
+        "Resultados oficiais; DNF, DNS, DSQ e NC são preservados como categorias, não convertidos em posições."
+    )
+    order = [
+        abbr
+        for abbr in ctx.stats["Abbreviation"]
+        if abbr in set(ctx.races["Abbreviation"])
+    ]
+    st.plotly_chart(charts.result_heatmap(ctx.races, order), width="stretch")
+    rounds = ctx.races.sort_values("RoundNumber").drop_duplicates("RoundNumber")[
+        ["RoundNumber", "EventName"]
+    ]
+    round_map = dict(zip(rounds["RoundNumber"].astype(int), rounds["EventName"]))
+    chosen = st.selectbox(
+        "Analisar grid → chegada",
+        list(round_map),
+        format_func=lambda value: f"R{value} · {round_map[value]}",
+        index=len(round_map) - 1,
+    )
+    st.plotly_chart(charts.grid_to_finish(ctx.races, chosen), width="stretch")
 
+
+def page_compare() -> None:
+    ctx = _current_context()
+    _page_header(
+        "COMPARADOR",
+        "Onde a vantagem realmente aparece?",
+        "Compare pilotos na mesma escala, investigue duelos internos e veja a contribuição dos construtores.",
+    )
+    if len(ctx.stats) < 2:
+        st.warning("São necessários dois pilotos para comparar.")
+        return
+    ids = ctx.stats["DriverId"].tolist()
+    labels = ctx.stats.set_index("DriverId")["FullName"].to_dict()
+    defaults = (ctx.drivers + ids)[:2]
+    left, right = st.columns(2)
+    a = left.selectbox(
+        "Piloto A",
+        ids,
+        index=ids.index(defaults[0]),
+        format_func=lambda value: labels[value],
+    )
+    b_options = [value for value in ids if value != a]
+    b_default = defaults[1] if defaults[1] in b_options else b_options[0]
+    b = right.selectbox(
+        "Piloto B",
+        b_options,
+        index=b_options.index(b_default),
+        format_func=lambda value: labels[value],
+    )
+    st.plotly_chart(charts.driver_dumbbell(ctx.stats, [a, b]), width="stretch")
+    st.caption(
+        "A escala relativa é calculada dentro do grid da temporada; para média de grid, chegada e DNF, menor é melhor."
+    )
+    st.divider()
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("Points ranking")
-        if not dstats.empty:
-            pts = dstats[["FullName", "TeamName", "TeamColor", "Points"]].sort_values(
-                "Points"
-            )
-            st.plotly_chart(
-                charts.points_bar(pts, analytics._color_map(pts, "TeamName")),
-                width="stretch",
-            )
+        st.subheader("Força dos construtores")
+        st.plotly_chart(charts.constructor_points(ctx.teams), width="stretch")
     with c2:
-        st.subheader("Season progression")
-        cumulative = _cumulative(races_season)
-        if not cumulative.empty:
-            order = (
-                cumulative.groupby("FullName")["Cumulative Points"]
-                .last()
-                .sort_values(ascending=False)
-                .index.tolist()
-            )
-            st.plotly_chart(
-                charts.cumulative_points(
-                    cumulative,
-                    analytics._color_map(cumulative, "FullName", keep="first"),
-                    order,
-                ),
-                width="stretch",
-            )
-
-    st.divider()
-    st.subheader(f"Last {last_n} race results")
-    _recent_race_cards(races_all, last_n)
-
-    st.divider()
-    st.subheader("Finishing position by round")
-    _position_heatmap(races_season, dstats)
-
-
-def _tab_deep_dives(season: int, preds: pd.DataFrame) -> None:
-    t_drv, t_con, t_mate, t_rel = st.tabs(
-        ["🧑‍🚀 Drivers", "🏗️ Constructors", "⚔️ Teammates", "🎯 Quali & reliability"]
-    )
-
-    with t_drv:
-        dstats = data.driver_stats(season)
-        if dstats.empty:
-            st.info("No race data for this season.")
-        else:
-            heads = preds.drop_duplicates("FullName")[["FullName", "HeadshotUrl"]]
-            table = dstats.merge(heads, on="FullName", how="left")
-            st.dataframe(
-                table[
-                    [
-                        "Rank",
-                        "HeadshotUrl",
-                        "FullName",
-                        "TeamName",
-                        "Races",
-                        "Wins",
-                        "Podiums",
-                        "Poles",
-                        "DNFs",
-                        "Points",
-                        "BestFinish",
-                        "AvgFinish",
-                        "AvgGrid",
-                        "AvgGain",
-                        "PodiumRate",
-                    ]
-                ],
-                column_config={
-                    "Rank": st.column_config.NumberColumn("#"),
-                    "HeadshotUrl": st.column_config.ImageColumn(""),
-                    "FullName": st.column_config.TextColumn("Driver"),
-                    "TeamName": st.column_config.TextColumn("Team"),
-                    "Wins": st.column_config.NumberColumn("🏆"),
-                    "Podiums": st.column_config.NumberColumn("🥇"),
-                    "Poles": st.column_config.NumberColumn("🎯"),
-                    "DNFs": st.column_config.NumberColumn("❌"),
-                    "Points": st.column_config.NumberColumn("Points", format="%.0f"),
-                    "BestFinish": st.column_config.NumberColumn("Best", format="%.0f"),
-                    "AvgFinish": st.column_config.NumberColumn(
-                        "Avg fin", format="%.1f"
-                    ),
-                    "AvgGrid": st.column_config.NumberColumn("Avg grid", format="%.1f"),
-                    "AvgGain": st.column_config.NumberColumn("Avg +/−", format="%.1f"),
-                    "PodiumRate": st.column_config.ProgressColumn(
-                        "Podium rate", format="%.0f%%", min_value=0, max_value=1
-                    ),
-                },
-                hide_index=True,
-                width="stretch",
-                height=min(38 * (len(table) + 1) + 3, 700),
-            )
-
-    with t_con:
-        tstats = data.team_stats(season)
-        if tstats.empty:
-            st.info("No race data for this season.")
-        else:
-            st.plotly_chart(
-                charts.constructor_bar(
-                    tstats, analytics._color_map(tstats, "TeamName")
-                ),
-                width="stretch",
-            )
-            st.dataframe(
-                tstats[["Rank", "TeamName", "Wins", "Podiums", "Points"]],
-                column_config={
-                    "Rank": st.column_config.NumberColumn("#"),
-                    "TeamName": st.column_config.TextColumn("Team"),
-                    "Points": st.column_config.NumberColumn("Points", format="%.0f"),
-                },
-                hide_index=True,
-                width="stretch",
-            )
-
-    with t_mate:
-        h2h = data.teammate_h2h(season)
+        st.subheader("Duelos entre companheiros")
+        h2h = data.teammate_h2h(ctx.season)
         if h2h.empty:
-            st.info("No two-car constructor data for this season.")
+            st.info("Não há pares completos nesta temporada.")
         else:
-            st.plotly_chart(charts.teammate_h2h_bars(h2h), width="stretch")
-            rec = pd.DataFrame(
-                {
-                    "Team": h2h["TeamName"],
-                    "Race (A–B)": h2h["RaceWinsA"].astype(int).astype(str)
-                    + "–"
-                    + h2h["RaceWinsB"].astype(int).astype(str),
-                    "Quali (A–B)": h2h["QualiWinsA"].astype(int).astype(str)
-                    + "–"
-                    + h2h["QualiWinsB"].astype(int).astype(str),
-                    "A": h2h["abbr_a"],
-                    "B": h2h["abbr_b"],
-                    "Points (A–B)": h2h["PointsA"].round().astype(int).astype(str)
-                    + "–"
-                    + h2h["PointsB"].round().astype(int).astype(str),
-                }
-            )
-            st.dataframe(rec, hide_index=True, width="stretch")
-
-    with t_rel:
-        rel = data.reliability(season)
-        if rel.empty:
-            st.info("No race data for this season.")
-        else:
-            best = rel[rel["Starts"] >= 3].sort_values("AvgGrid")
-            if not best.empty:
-                st.caption(
-                    f"Best qualifier: **{best.iloc[0]['FullName']}** "
-                    f"(avg grid P{best.iloc[0]['AvgGrid']:.1f})"
-                )
-            st.dataframe(
-                rel[
-                    [
-                        "FullName",
-                        "TeamName",
-                        "Starts",
-                        "DNFs",
-                        "DNFRate",
-                        "PointsFinishRate",
-                        "AvgGrid",
-                        "BestGrid",
-                        "AvgGain",
-                    ]
-                ],
-                column_config={
-                    "FullName": st.column_config.TextColumn("Driver"),
-                    "TeamName": st.column_config.TextColumn("Team"),
-                    "DNFRate": st.column_config.ProgressColumn(
-                        "DNF rate", format="%.0f%%", min_value=0, max_value=1
-                    ),
-                    "PointsFinishRate": st.column_config.ProgressColumn(
-                        "Points rate", format="%.0f%%", min_value=0, max_value=1
-                    ),
-                    "AvgGrid": st.column_config.NumberColumn("Avg grid", format="%.1f"),
-                    "BestGrid": st.column_config.NumberColumn(
-                        "Best grid", format="%.0f"
-                    ),
-                    "AvgGain": st.column_config.NumberColumn("Avg +/−", format="%.1f"),
-                },
-                hide_index=True,
-                width="stretch",
-            )
-            races_season = data.races_frame()
-            races_season = races_season[races_season["Year"] == season].copy()
-            races_season["Gain"] = (
-                races_season["GridPosition"] - races_season["Position"]
-            )
-            order = (
-                races_season.groupby("Abbreviation")["Gain"]
-                .median()
-                .sort_values(ascending=False)
-                .index.tolist()
-            )
-            st.plotly_chart(charts.gain_box(races_season, order), width="stretch")
+            st.plotly_chart(charts.teammate_duels(h2h), width="stretch")
 
 
-def _tab_data(preds: pd.DataFrame, selected: list[str]) -> None:
-    sel = preds[preds["driver_team_id"].isin(selected)]
-    pivot = sel.pivot_table(
-        index="dt_ref", columns="driver_team_id", values="prob_win"
-    ).reset_index()
-    cfg = {
-        c: st.column_config.NumberColumn(c, format="percent") for c in pivot.columns[1:]
-    }
-    cfg["dt_ref"] = st.column_config.TextColumn("Prediction date")
-    st.markdown("#### Win probability by prediction date")
-    st.dataframe(pivot, column_config=cfg, width="stretch", hide_index=True)
-    with st.expander("Full feature table (nulls preserved)"):
-        st.dataframe(sel, width="stretch", hide_index=True)
-
-
-# ── shared derivations ────────────────────────────────────────────────────
-
-
-def _cumulative(races_season: pd.DataFrame) -> pd.DataFrame:
-    df = races_season.dropna(subset=["Points", "RoundNumber"]).sort_values(
-        "RoundNumber"
+def page_model_data() -> None:
+    ctx = _current_context()
+    _page_header(
+        "TRANSPARÊNCIA",
+        "O que sustenta a previsão?",
+        "Desempenho fora do tempo, explicações individuais, limitações e saúde dos dados no mesmo lugar.",
     )
-    if df.empty:
-        return df
-    cum = (
-        df.groupby(["FullName", "TeamName", "TeamColor", "RoundNumber", "EventName"])[
-            "Points"
+    card = data.model_card()
+    info = data.model_info()
+    status = card.get("status", "indisponível" if not info else "experimental")
+    st.info(
+        f"Status do modelo: **{status}** · previsões são estimativas, não garantias."
+    )
+    if not ctx.predictions.empty and ctx.predictions["prob_win"].notna().any():
+        selected = ctx.drivers or ctx.stats["DriverId"].head(5).tolist()
+        st.subheader("Evolução das probabilidades")
+        st.plotly_chart(
+            charts.probability_history(ctx.predictions, selected), width="stretch"
+        )
+    else:
+        st.warning("A API não retornou previsões válidas para esta temporada.")
+    st.divider()
+    m1, m2 = st.columns(2)
+    with m1:
+        st.subheader("Validação temporal")
+        evaluations = card.get("evaluations", [])
+        if evaluations:
+            st.plotly_chart(charts.model_performance(evaluations), width="stretch")
+        else:
+            st.caption("O modelo registrado ainda não contém backtests temporais.")
+    with m2:
+        st.subheader("Calibração")
+        calibration = card.get("calibration", [])
+        if calibration:
+            st.plotly_chart(charts.calibration_curve(calibration), width="stretch")
+        else:
+            st.caption("O modelo registrado ainda não contém uma curva de calibração.")
+    importances = info.get("importances", {})
+    if importances:
+        st.subheader("O que o modelo usa globalmente")
+        st.caption(
+            "Importância global não indica a direção do efeito para um piloto específico."
+        )
+        st.plotly_chart(charts.importance_bar(importances), width="stretch")
+    if not ctx.predictions.empty and info.get("features"):
+        latest = ctx.predictions[
+            ctx.predictions["dt_ref"] == ctx.predictions["dt_ref"].max()
         ]
-        .sum()
-        .reset_index()
-        .sort_values(["FullName", "RoundNumber"])
+        candidates = latest["DriverId"].tolist()
+        if candidates:
+            label_map = latest.set_index("DriverId")["FullName"].to_dict()
+            chosen = st.selectbox(
+                "Explicação individual",
+                candidates,
+                format_func=lambda value: label_map[value],
+            )
+            row = latest[latest["DriverId"] == chosen].iloc[0]
+            payload_cols = [
+                "id",
+                *[column for column in info["features"] if column in latest],
+            ]
+            explanations = data.explain(pd.DataFrame([row[payload_cols].to_dict()]))
+            if row["id"] in explanations:
+                st.plotly_chart(
+                    charts.contribution_bar(explanations[row["id"]]), width="stretch"
+                )
+            else:
+                st.caption("Explicação SHAP indisponível para esta versão do modelo.")
+    st.divider()
+    st.subheader("Saúde e acesso aos dados")
+    health = data.data_health(ctx.season)
+    h1, h2, h3, h4 = st.columns(4)
+    h1.metric(
+        "Último resultado",
+        health["latest_result"].strftime("%d/%m/%Y")
+        if health["latest_result"] is not None
+        else "—",
     )
-    cum["Cumulative Points"] = cum.groupby("FullName")["Points"].cumsum()
-    return cum
-
-
-def _position_heatmap(races_season: pd.DataFrame, dstats: pd.DataFrame) -> None:
-    df = races_season.dropna(subset=["Position", "RoundNumber"]).copy()
-    if df.empty:
-        st.info("No race data for this season.")
-        return
-    df["Position"] = df["Position"].astype(int)
-    pivot = df.pivot_table(
-        index="Abbreviation", columns="EventName", values="Position", aggfunc="min"
-    )
-    if not dstats.empty:
-        order = [a for a in dstats["Abbreviation"] if a in pivot.index]
-        order += [a for a in pivot.index if a not in order]
-        pivot = pivot.reindex(order[::-1])
-    st.plotly_chart(charts.position_heatmap(pivot), width="stretch")
-
-
-# ── main ──────────────────────────────────────────────────────────────────
+    h2.metric("Rodadas", health["rounds"])
+    h3.metric("Snapshots preditivos", health["prediction_snapshots"])
+    h4.metric("Chaves duplicadas", health["duplicate_results"])
+    with st.expander("Dados analíticos e metodologia"):
+        st.dataframe(ctx.stats, hide_index=True, width="stretch")
+        st.download_button(
+            "Baixar classificação em CSV",
+            ctx.stats.to_csv(index=False).encode(),
+            file_name=f"classificacao_f1_{ctx.season}.csv",
+            mime="text/csv",
+        )
+        st.markdown(
+            "Posições médias excluem DNF/DNS/DSQ; grid zero (pit lane) não é tratado como posição. Probabilidades são normalizadas por snapshot."
+        )
 
 
 def main() -> None:
     st.set_page_config(
-        page_title="F1 Champion Predictor",
-        page_icon="🏎️",
+        page_title="Lake FastF1",
+        page_icon="🏁",
         layout="wide",
         initial_sidebar_state="expanded",
     )
-
-    seasons = data.available_seasons()
-
-    with st.sidebar:
-        st.header("Filters")
-        season = st.selectbox("📅 Season", options=seasons, index=0, key="season")
-        last_n = st.slider(
-            "Momentum / recent-race window", 3, 10, RECENT_RACES_DEFAULT, key="window"
-        )
-
-    with st.spinner("Loading predictions…"):
-        preds = data.load_predictions(season)
-
-    st.markdown("# 🏁 F1 — Champion Win Predictor")
-    if preds.empty or preds["prob_win"].isna().all():
-        st.warning(
-            f"No predictions available for {season}. "
-            "Is the API running and the model registered?"
-        )
-        return
-
-    st.caption(
-        "Model-estimated probability that each driver finishes the season as "
-        f"championship points leader · latest prediction {preds['dt_ref'].max()}"
+    _css()
+    page = st.navigation(
+        {
+            "Lake FastF1": [
+                st.Page(page_overview, title="Visão geral", icon="🏁", default=True),
+                st.Page(page_championship, title="Campeonato", icon="📈"),
+                st.Page(page_compare, title="Comparador", icon="⚖️"),
+                st.Page(page_model_data, title="Modelo & dados", icon="🔬"),
+            ]
+        }
     )
-
-    options, labels = _driver_options(preds)
-    with st.sidebar:
-        selected = st.multiselect(
-            "🏎️ Drivers",
-            options=options,
-            default=options[:5],
-            format_func=lambda x: labels.get(x, x),
-            key="drivers",
-        )
-    if not selected:
-        selected = options[:5]
-
-    momentum = data.momentum(season, last_n)
-    dstats = data.driver_stats(season)
-    h2h = data.teammate_h2h(season)
-    rel = data.reliability(season)
-
-    st.divider()
-    _championship_strip(dstats)
-    st.divider()
-    _probability_cards(momentum)
-
-    insights = analytics.build_insights(momentum, h2h, rel, last_n)
-    if insights:
-        st.info("  \n".join(f"- {line}" for line in insights))
-
-    st.divider()
-    tab_pred, tab_season, tab_deep, tab_data = st.tabs(
-        ["🔮 Prediction", "📅 Season", "🔬 Deep Dives", "📋 Data"]
-    )
-    with tab_pred:
-        _tab_prediction(preds, selected, momentum, last_n)
-    with tab_season:
-        _tab_season(season, last_n)
-    with tab_deep:
-        _tab_deep_dives(season, preds)
-    with tab_data:
-        _tab_data(preds, selected)
+    _global_filters()
+    page.run()
 
 
 if __name__ == "__main__":

@@ -1,263 +1,266 @@
-
 # Lake FastF1
 
 [![tests](https://github.com/rvanguita/lake-fastf1/actions/workflows/tests.yml/badge.svg)](https://github.com/rvanguita/lake-fastf1/actions/workflows/tests.yml)
 
-![Lake FastF1](img/high.png)
+![Monoposto percorrendo um circuito formado por fluxos e camadas de dados](img/lake-fastf1-hero.webp)
 
-Lake FastF1 is a long-term data engineering and machine learning project focused on Formula 1 data. It combines data ingestion, lakehouse-style transformations, and a lightweight prediction experience powered by a trained model.
+Uma plataforma de dados e machine learning para transformar resultados históricos da Fórmula 1 em datasets confiáveis, análises interativas e probabilidades transparentes para o campeonato de pilotos.
 
-## What this project does
+O projeto percorre o ciclo completo: ingere dados da FastF1, organiza um lakehouse em Delta Lake, orquestra transformações com Airflow, treina e registra modelos no MLflow, publica previsões por FastAPI e entrega uma experiência analítica em Streamlit.
 
-The project collects Formula 1 race and session results using the FastF1 library, processes them through a multi-layer data pipeline, and prepares curated datasets for analytics and prediction.
+## Índice
 
-The workflow includes:
+- [Visão geral](#visão-geral)
+- [Arquitetura](#arquitetura)
+- [Stack tecnológica](#stack-tecnológica)
+- [Estrutura do repositório](#estrutura-do-repositório)
+- [Executando localmente](#executando-localmente)
+- [Pipeline de dados](#pipeline-de-dados)
+- [Modelo preditivo](#modelo-preditivo)
+- [Produto analítico](#produto-analítico)
+- [API](#api)
+- [Qualidade e testes](#qualidade-e-testes)
+- [Limitações e próximos passos](#limitações-e-próximos-passos)
 
-- Extracting raw race/session results from Formula 1 events.
-- Storing the raw data in Parquet files.
-- Consolidating the data into a Bronze layer with Delta Lake.
-- Creating Silver-layer datasets for champions, driver statistics, and analytical tables.
-- Training a championship-prediction model (scikit-learn) tracked in MLflow.
-- Mirroring the Bronze/Silver Delta tables into MySQL for BI consumers outside the Spark/Delta stack.
-- Exposing predictions through a **FastAPI** service and an interactive **Streamlit** dashboard.
-- Optionally archiving raw Parquet files to S3 (manual utility, not part of the DAG).
+## Visão geral
 
-## Architecture
+Lake FastF1 nasceu para explorar um problema esportivo como um produto de dados de ponta a ponta — não apenas como um notebook ou modelo isolado.
 
-The project follows a practical data platform structure:
+- **Engenharia de dados:** ingestão histórica, arquitetura medalhão, contratos, qualidade, lineage e espelhamento para consumo externo.
+- **Ciência de dados:** features temporais, validação fora do tempo, calibração, comparação com baseline e explicabilidade.
+- **Produto analítico:** quatro jornadas orientadas a perguntas, gráficos editoriais e degradação segura quando o modelo está indisponível.
 
-- **Raw layer**: initial extracted results stored as Parquet files.
-- **Bronze layer**: consolidated data tables stored in Delta format.
-- **Silver layer**: curated analytical datasets prepared for reporting and model consumption.
-- **MySQL mirror**: the last DAG step (`src/sender_local.py`) copies every Bronze/Silver Delta table into MySQL for consumers outside the Spark/Delta stack.
-- **Orchestration**: the Airflow DAG `data-pipeline` (`dags/data_pipeline.py`) runs weekly on Mondays (`catchup=False`, `max_active_runs=1`), wiring `raw >> bronze >> silver >> sender_mysql` with explicit `Asset` lineage.
-- **S3 archive**: `src/sender.py` is a standalone CLI (not wired into the DAG) that uploads raw Parquet files to S3.
-- **Serving layer**: a FastAPI service and a Streamlit dashboard consume the processed data and machine learning outputs.
+## Arquitetura
 
+```mermaid
+flowchart TD
+    FASTF1["FastF1 / Ergast"]
+
+    subgraph lake["Lakehouse — arquitetura medalhão"]
+        RAW["Raw<br/>Parquet · um arquivo por sessão"]
+        BRONZE["Bronze<br/>Delta · histórico consolidado"]
+        SILVER["Silver<br/>Delta · champions · driver_statistic_N<br/>driver_all_statistic · tb_abt · marts"]
+    end
+
+    subgraph ml["Modelo"]
+        TRAIN["train_driver_champion.py<br/>split temporal · rolling origin · calibração"]
+        MLFLOW["MLflow<br/>tracking + registry"]
+    end
+
+    subgraph serving["Serving"]
+        API["FastAPI :5002<br/>/predict · /v1/predict<br/>/v1/explain · /v1/model-card"]
+        APP["Streamlit :8501<br/>quatro páginas analíticas"]
+    end
+
+    subgraph external["Consumo externo"]
+        MYSQL["MySQL<br/>espelho para BI"]
+        S3["Amazon S3<br/>arquivo Raw · envio manual"]
+    end
+
+    AIRFLOW["Apache Airflow · DAG data-pipeline<br/>semanal (segunda 00:00) · sem catch-up"]
+
+    FASTF1 --> RAW --> BRONZE --> SILVER
+    AIRFLOW -. orquestra .-> RAW
+    AIRFLOW -. orquestra .-> BRONZE
+    AIRFLOW -. orquestra .-> SILVER
+    AIRFLOW -. orquestra .-> MYSQL
+    SILVER -->|tb_abt| TRAIN --> MLFLOW
+    MLFLOW -->|modelo registrado| API
+    BRONZE --> APP
+    SILVER --> APP
+    API <-->|previsões · explicações · model card| APP
+    BRONZE --> MYSQL
+    SILVER --> MYSQL
+    RAW -. envio manual .-> S3
 ```
-┌────────────────────────── Airflow DAG: data-pipeline (weekly) ──────────────────────────┐
-│                                                                                         │
-│  FastF1 ──► Raw (Parquet) ──► Bronze (Delta) ──► Silver (Delta) ──► MySQL mirror         │
-│                 │                                                                        │
-└─────────────────┼───────────────────────────────────────────────────────────────────────┘
-                  │ manual CLI: src/sender.py
-            ┌─────▼─────┐
-            │ S3 bucket │
-            └───────────┘
 
-   MLflow (tracking) ──model──► FastAPI :5002 /predict ◄──── Streamlit :8501 dashboard
-                                                              │
-                        Bronze + Silver (Delta) ──read────────┘
-```
+![Fluxo visual de dados atravessando camadas progressivamente mais estruturadas até chegar à análise](img/lakehouse-architecture.webp)
 
-## Main technologies
+O Airflow coordena o caminho semanal da FastF1 até o espelho MySQL. O envio dos arquivos Raw ao Amazon S3 é manual e opcional; o treino temporal também ocorre fora do DAG e registra seus artefatos no MLflow. Para compor o produto analítico, o Streamlit lê Bronze, Silver e marts diretamente enquanto consulta previsões, explicações e o model card publicados pela FastAPI.
 
-| Layer | Technology |
+O DAG `data-pipeline` executa às segundas-feiras, sem catch-up e com uma execução ativa por vez. Os assets do Airflow registram a dependência entre Raw, Bronze, Silver e o espelho MySQL.
+
+## Stack tecnológica
+
+| Responsabilidade | Tecnologias |
 |---|---|
-| Data access | FastF1 |
-| Data processing | Pandas, NumPy, PySpark, `deltalake` (direct Delta reads in the API/dashboard) |
-| Storage | Delta Lake (Bronze/Silver), Parquet (Raw) |
-| BI mirror | MySQL (PyMySQL + SQLAlchemy) |
-| Object storage | AWS S3 (boto3) |
-| Orchestration | Apache Airflow |
-| Modeling | scikit-learn |
-| Model tracking | MLflow |
-| Prediction API | **FastAPI** + Uvicorn |
-| Dashboard | Streamlit + Plotly |
-| Package management | **uv** |
-| Deployment | Docker, Docker Compose |
+| Fonte e processamento | FastF1, Pandas, NumPy, PySpark |
+| Armazenamento | Parquet, Delta Lake |
+| Orquestração e lineage | Apache Airflow |
+| Modelagem e explicabilidade | scikit-learn, SHAP |
+| Tracking e registro | MLflow |
+| API | FastAPI, Uvicorn |
+| Produto analítico | Streamlit, Plotly |
+| Consumo externo | MySQL, Amazon S3 |
+| Ambiente e entrega | uv, Docker, Docker Compose |
 
-## Repository structure
+## Estrutura do repositório
 
-```
+```text
 lake-fastf1/
 ├── app/
-│   ├── api/                    # FastAPI prediction service (own uv project)
-│   │   ├── main.py
-│   │   ├── pyproject.toml / uv.lock
-│   │   └── Dockerfile
-│   └── streamlit/              # Interactive dashboard (own uv project)
-│       ├── main.py
-│       ├── pyproject.toml / uv.lock
-│       └── Dockerfile
+│   ├── api/                  # FastAPI: inferência, explicações e model card
+│   └── streamlit/            # dashboard: páginas, dados, semântica e gráficos
 ├── dags/
-│   └── data_pipeline.py        # the single Airflow DAG (dag_id="data-pipeline")
-├── src/                        # ETL / ML source
-│   ├── extract_data.py         # Raw: FastF1 -> data/raw (Parquet)
-│   ├── spark_session.py        # Bronze: consolidate Raw -> Delta (+ Spark/Delta helpers)
-│   ├── silver_data.py          # Silver: champions, driver_statistic_*, tb_abt
-│   ├── train_driver_champion.py  # train model, log/register in MLflow
-│   ├── sender_local.py         # mirror Bronze/Silver Delta tables into MySQL
-│   ├── sender.py               # upload raw Parquet to S3 (standalone CLI)
-│   ├── queries/                # SQL run by the Silver layer (champions.sql, ...)
-│   └── lake_fastf1/            # packaged entry point (uv_build)
-├── data/                       # Raw, Bronze, Silver datasets (gitignored)
-├── requirements.txt            # deps for the Airflow image (installed via pip)
-├── pyproject.toml              # root uv project
-├── CLAUDE.md                   # architecture & development guide
-├── .env.example
-├── docker-compose.yml
-└── Dockerfile                  # Airflow image
+│   └── data_pipeline.py      # DAG Airflow com assets Raw → Bronze → Silver → MySQL
+├── docs/                     # contratos e documentação complementar
+├── src/
+│   ├── queries/              # transformações SQL da camada Silver
+│   │   ├── champions.sql
+│   │   ├── driver_statistic.sql
+│   │   ├── mart_driver_round.sql
+│   │   ├── mart_standings.sql
+│   │   └── tb_abt.sql
+│   ├── extract_data.py       # FastF1 → Raw (Parquet)
+│   ├── spark_session.py      # Raw → Bronze e helpers Delta
+│   ├── silver_data.py        # Bronze → Silver, marts e validações
+│   ├── sender_local.py       # espelho das tabelas Delta para MySQL
+│   ├── sender.py             # upload manual dos arquivos Raw para S3
+│   └── train_driver_champion.py
+├── tests/                    # testes do pipeline e da preparação do treino
+├── docker-compose.yml        # Airflow, FastAPI e Streamlit
+└── pyproject.toml
 ```
 
-## Getting started
+## Executando localmente
 
-Run the project locally with Docker Compose:
+### Pré-requisitos
+
+- Docker com Docker Compose;
+- um arquivo `.env` criado a partir de `.env.example`;
+- diretórios Delta materializados para o dashboard;
+- um servidor MLflow acessível pela API para habilitar previsões.
 
 ```bash
+cp .env.example .env
 docker compose up --build -d
 ```
 
-Services exposed:
+O Compose provisiona Airflow, FastAPI e Streamlit. MLflow, MySQL e S3 são integrações externas e devem ser configurados pelas variáveis de ambiente.
 
-| Service | URL |
+| Serviço | Endereço local |
 |---|---|
-| Airflow | http://localhost:8080 |
-| FastAPI | http://localhost:5002 |
-| FastAPI Swagger | http://localhost:5002/docs |
-| Streamlit | http://localhost:8501 |
+| Airflow | <http://localhost:8080> |
+| FastAPI | <http://localhost:5002> |
+| OpenAPI | <http://localhost:5002/docs> |
+| Streamlit | <http://localhost:8501> |
 
-### Tests
+> Ao executar em containers, `MLFLOW_URI` precisa apontar para um endereço alcançável a partir da rede Docker; `localhost` dentro da API representa o próprio container.
 
-`pytest`, split into three suites (one per `uv` project). They mock every external dependency
-(FastF1, Spark, MLflow, MySQL, S3), so they run in seconds:
+### Pipeline e treino
+
+Os estágios podem ser executados separadamente durante o desenvolvimento:
 
 ```bash
-uv run pytest                        # root — src/ helpers + ExtractData
-(cd app/api && uv run pytest)        # FastAPI routes
-(cd app/streamlit && uv run pytest)  # dashboard pandas helpers
+uv run python -m src.extract_data
+uv run python -m src.spark_session
+uv run python -m src.silver_data
+uv run python -m src.train_driver_champion
 ```
 
-CI (`.github/workflows/tests.yml`) runs all three suites plus `ruff format --check` on every
-push and pull request.
+Spark e Delta exigem Java 17. O devcontainer do projeto já oferece esse ambiente.
 
-### Environment variables
+### Configuração essencial
 
-Copy `.env.example` to `.env` and fill in the values. Every pipeline module (`src/*.py`) reads
-its config via `os.environ[...]` and raises `KeyError` if a required var is unset — always run
-through `docker compose` or with `.env` sourced.
-
-```env
-# AWS / S3 (raw Parquet archival: src/sender.py, manual CLI)
-AWS_KEY=
-AWS_SECRET_KEY=
-REGION_NAME="us-east-1"
-
-# Airflow (docker compose)
-AIRFLOW_VERSION=3.3.0
-AIRFLOW_PORT=8080
-AIRFLOW_UID=1000
-
-# FastAPI prediction service
-API_PORT=5002
-
-# Data lake layer paths + SQL directory
-PATH_RAW="data/raw"
-PATH_BRONZE="data/bronze"
-PATH_SILVER="data/silver"
-PATH_QUERIES="src/queries"
-
-FORMAT_READ="parquet"
-
-# MLflow
-MLFLOW_URI="http://localhost:5050"
-MLFLOW_MODEL_REGISTERED="f1-champion"
-MLFLOW_EXPERIMENT_NAME="f1-champion"
-
-# Streamlit dashboard
-STREAMLIT_PORT=8501
-
-# MySQL mirror (Bronze/Silver -> MySQL: src/sender_local.py, DAG task sender_mysql)
-MYSQL_HOST=
-MYSQL_PORT=3306
-MYSQL_ID_TABLE=fastf1
-MYSQL_USER=
-MYSQL_PASSWORD=
-```
-
-| Variable | Description |
+| Grupo | Variáveis |
 |---|---|
-| `PATH_RAW` | Directory where extracted Parquet files are stored. |
-| `PATH_BRONZE` | Directory where consolidated Bronze tables are stored. |
-| `PATH_SILVER` | Directory where processed Silver tables are stored. |
-| `PATH_QUERIES` | Directory containing the SQL files run by the Silver layer. |
-| `FORMAT_READ` | File format read from the Raw layer (`parquet`). |
-| `MLFLOW_URI` | Tracking server URI used by the API and training scripts. |
-| `MLFLOW_MODEL_REGISTERED` | Name of the registered model served by the API. |
-| `MLFLOW_EXPERIMENT_NAME` | Experiment name used when logging training runs. |
-| `API_PORT` | Port exposed by the FastAPI service (default `5002`). |
-| `STREAMLIT_PORT` | Port exposed by the Streamlit dashboard (default `8501`). |
-| `AIRFLOW_PORT` / `AIRFLOW_UID` / `AIRFLOW_VERSION` | Airflow container port, host UID for file permissions, and image version. |
-| `AWS_KEY` / `AWS_SECRET_KEY` / `REGION_NAME` | Credentials/region for the manual S3 upload of raw Parquet (`src/sender.py`). |
-| `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_USER` / `MYSQL_PASSWORD` | Connection for the MySQL mirror step (`src/sender_local.py`). |
-| `MYSQL_ID_TABLE` | Table-name prefix for the mirrored tables (`{MYSQL_ID_TABLE}_{layer}_{table}`). |
+| Lake | `PATH_RAW`, `PATH_BRONZE`, `PATH_SILVER`, `PATH_QUERIES` |
+| MLflow | `MLFLOW_URI`, `MLFLOW_MODEL_REGISTERED`, `MLFLOW_EXPERIMENT_NAME` |
+| Serviços | `AIRFLOW_PORT`, `AIRFLOW_UID`, `API_PORT`, `STREAMLIT_PORT` |
+| MySQL | `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_ID_TABLE`, `MYSQL_USER`, `MYSQL_PASSWORD` |
+| S3 opcional | `AWS_KEY`, `AWS_SECRET_KEY`, `REGION_NAME` |
 
-> The Streamlit container additionally gets `TABLE_PATH_SILVER` and `TABLE_PATH_BRONZE` from
-> `docker-compose.yml` (paths of the read-only Delta mounts inside that container, not the same
-> as `PATH_SILVER` / `PATH_BRONZE`), and reaches the API at `http://api-driver-champion:${API_PORT}`
-> (the Docker Compose service name), not `localhost`.
+Consulte `.env.example` para os valores esperados. Os caminhos `TABLE_PATH_*` do Streamlit são definidos no `docker-compose.yml` e representam os mounts somente leitura dentro do container.
 
-## Dashboard
+## Pipeline de dados
 
-The Streamlit dashboard (`http://localhost:8501`) provides a full view of the F1 season — from raw race results to ML-based championship predictions.
+1. **Raw:** a FastF1 é consultada por temporada, rodada e tipo de sessão; cada resultado é persistido em Parquet.
+2. **Bronze:** o Spark consolida os arquivos em uma tabela Delta com o histórico completo.
+3. **Silver:** consultas Spark SQL produzem campeões, estatísticas móveis, ABT do modelo e marts analíticos.
+4. **Treino:** somente temporadas concluídas entram no modelo; backtests avançam cronologicamente e os artefatos são registrados no MLflow.
+5. **Serving:** a FastAPI carrega a versão registrada e o Streamlit combina previsões com resultados Bronze/Silver.
+6. **Consumo externo:** o último estágio do DAG replica as tabelas Delta para MySQL. O envio Raw para S3 é uma rotina manual e opcional.
 
-### Code
+## Modelo preditivo
 
-`app/streamlit/` is four modules: `main.py` (page config, sidebar, layout),
-`data.py` (Delta reads, API calls, `st.cache_data` wrappers), `analytics.py`
-(pure pandas aggregates + `build_insights`), `charts.py` (theme-aware Plotly
-builders). Charts follow the viewer's light/dark Streamlit theme.
+O alvo é identificar o campeão de pilotos a partir do histórico disponível em cada data de referência.
 
-### Layout
+![Snapshots históricos e trajetórias probabilísticas convergindo após validação e calibração](img/model-intelligence.webp)
 
-**Sidebar:** season selector (single), driver multi-select (defaults to top-5 by
-probability, shown as `M. Verstappen — Red Bull Racing`), and a momentum /
-recent-race window slider (3–10).
+- A temporada em andamento é excluída dos rótulos de treino.
+- O universo de candidatos contém apenas pilotos que já participaram da temporada analisada.
+- O backtest usa *rolling origin*: uma temporada é testada somente com anos anteriores no treino.
+- O estimador combina imputação constante, Random Forest e calibração sigmoide aprendida fora do tempo.
+- ROC-AUC é auxiliar; o model card também registra Brier score, log loss, acerto do campeão e baseline de pontos recentes.
+- O status permanece `experimental` quando o modelo não supera o baseline definido.
+- A explicação individual usa SHAP; importância global e contribuição local são apresentadas separadamente.
 
-**Top of page — always visible:** championship strip (rounds · points leader ·
-gap to P2 · most wins), top-5 probability cards (headshot · win % · Δ vs last
-round), and an auto **Insights** panel — up to five deterministic findings
-(biggest probability mover, fastest-rising form, closest teammate fight, best
-qualifier, reliability watch).
+Os limites retornados pela API representam a dispersão entre membros do ensemble. Eles não devem ser interpretados como garantia ou intervalo de confiança causal.
 
-**Tabs:**
+## Produto analítico
 
-| Tab | Content |
-|---|---|
-| 🔮 Prediction | Win probability over time (selected drivers, team colors, unified hover); **Momentum** — Δ-since-last-round bars + rank-change table; **Explainability** expander — global RF feature importance (from `GET /model_info`) plus a per-driver "top factors" heuristic (importance × above/below the field median) |
-| 📅 Season | Season snapshot KPIs, points ranking bar, cumulative points progression, recent-race cards (grid → finish ▲/▼), finishing-position-by-round heatmap |
-| 🔬 Deep Dives | Sub-tabs — Drivers (full season table with headshots), Constructors (points bar + table), **Teammates** (intra-constructor race/quali/points head-to-head), **Quali & reliability** (DNF rate, points-finish rate, grid stats + grid → finish spread box plot) |
-| 📋 Data | Win probability pivot + full feature table (nulls preserved) |
+O dashboard foi estruturado em quatro páginas. Temporada, pilotos em destaque e janela de tendência são filtros globais.
+
+| Página | Pergunta principal | Visualizações |
+|---|---|---|
+| **Visão geral** | Quem controla o campeonato e o que mudou? | KPIs, ranking, chances do título e insights automáticos |
+| **Campeonato** | Como a disputa evoluiu rodada a rodada? | Pontos acumulados, bump chart, matriz de resultados e grid → chegada |
+| **Comparador** | Onde estão as diferenças entre pilotos e equipes? | Dumbbells, construtores e duelos entre companheiros |
+| **Modelo & dados** | A previsão é confiável e sustentada por dados atualizados? | Backtests, calibração, importância global, SHAP e saúde dos dados |
+
+A interface continua utilizável quando a API preditiva está fora do ar. Se os novos marts ainda não estiverem materializados, a camada analítica recompõe as métricas diretamente do Bronze.
+
+### Semântica analítica
+
+- Pontos do campeonato incluem Race e Sprint; vitórias e pódios consideram a corrida principal.
+- DNF, DNS, DNQ, DSQ e NC permanecem categorias explícitas.
+- Grid zero representa pit lane e não contamina médias de posição.
+- Trocas de equipe não duplicam um piloto na classificação da temporada.
+- Rodadas sem participação preservam os pontos acumulados anteriores.
+- Probabilidades do mesmo snapshot são mutuamente exclusivas e somam 100%.
+
+Os grãos, chaves, regras e expectativas de qualidade estão no [contrato de dados analíticos](docs/analytics-data-contract.md).
 
 ## API
 
-The FastAPI service serves the latest registered MLflow model, cached for
-`MODEL_CACHE_TTL` seconds (default 300) so most requests skip the registry
-round-trip.
+A API mantém os contratos legados e adiciona uma versão voltada a transparência e consumo analítico.
+
+| Método | Endpoint | Finalidade |
+|---|---|---|
+| `GET` | `/health_check` | Verifica a disponibilidade do processo |
+| `GET` | `/model_info` | Lista features, classes e importâncias globais |
+| `POST` | `/predict` | Retorna o contrato legado de probabilidades por classe |
+| `POST` | `/v1/predict` | Retorna escore, probabilidade normalizada, limites e metadados |
+| `POST` | `/v1/explain` | Retorna contribuições SHAP por observação |
+| `GET` | `/v1/model-card` | Expõe corte de treino, backtests, calibração e limitações |
 
 ```bash
-# Health check
 curl http://localhost:5002/health_check
-
-# Model features + random-forest importances
-curl http://localhost:5002/model_info
-
-# Predict
-curl -X POST http://localhost:5002/predict \
-  -H "Content-Type: application/json" \
-  -d '{"values": [{"id": "...", "feature_1": 1.0, ...}]}'
+curl http://localhost:5002/v1/model-card
 ```
 
-Interactive documentation is available at `http://localhost:5002/docs`.
+Os endpoints de previsão exigem todas as features declaradas pelo modelo registrado. O schema interativo fica disponível em `/docs`.
 
-## Why this is a long-term project
+## Qualidade e testes
 
-This repository is designed as a long-term initiative rather than a one-off experiment. The pipeline is expected to evolve continuously as new data sources, validation rules, performance improvements, and modeling requirements are introduced.
+O repositório possui três projetos `uv` independentes e testes sem dependência de infraestrutura externa:
 
-Ongoing areas of improvement:
+```bash
+uv run pytest
+(cd app/api && uv run pytest)
+(cd app/streamlit && uv run pytest)
+```
 
-- Data quality checks and pipeline reliability
-- Scheduling and backfill behavior
-- Table design and business logic
-- Model retraining and evaluation
-- Observability, monitoring, and operational robustness
+A suíte cobre ingestão, helpers Spark, envio MySQL/S3, contratos SQL, preparação temporal do modelo, endpoints da API, semântica analítica e contratos dos gráficos. O CI executa as três suítes e `ruff format --check` a cada push e pull request.
+
+## Limitações e próximos passos
+
+- O dataset atual é orientado a resultados; telemetria, clima, pneus e tempos de volta ainda não fazem parte dos marts.
+- As tabelas Bronze/Silver são recompostas por overwrite, sem processamento incremental.
+- MLflow e MySQL não são provisionados pelo Compose atual.
+- Comparações de pontos entre eras precisam considerar mudanças regulatórias.
+- Evoluções naturais incluem ingestão incremental, observabilidade operacional, novos sinais de corrida e publicação de uma demonstração online.
+
+---
+
+Este repositório é um projeto de engenharia e ciência de dados aplicado. As probabilidades publicadas são estimativas experimentais e não constituem recomendação de aposta.

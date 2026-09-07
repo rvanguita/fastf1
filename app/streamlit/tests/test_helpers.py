@@ -19,13 +19,13 @@ import data
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        (None, "#ffffff"),
+        (None, "#737b8c"),
         ("#AABBCC", "#aabbcc"),
         ("1A2B3C", "#1a2b3c"),
         ("#already", "#already"),
-        ("nan", "#ffffff"),
-        (float("nan"), "#ffffff"),
-        ("", "#ffffff"),
+        ("nan", "#737b8c"),
+        (float("nan"), "#737b8c"),
+        ("", "#737b8c"),
     ],
 )
 def test_format_color(value, expected):
@@ -95,7 +95,9 @@ def test_predict_calls_api_and_unwraps(monkeypatch):
 
     assert out == {"x": {"1": 0.9}}
     post.assert_called_once_with(
-        f"{data.URI_API}/predict", json={"values": [{"id": "x", "f": 1}]}
+        f"{data.URI_API}/predict",
+        json={"values": [{"id": "x", "f": 1}]},
+        timeout=60,
     )
 
 
@@ -135,7 +137,7 @@ def test_compute_driver_stats_values(bronze):
     mx = stats.loc["Max V"]
     assert mx["Rank"] == 1
     assert mx["Races"] == 3
-    assert mx["Points"] == 68.0
+    assert mx["Points"] == 76.0  # race + sprint points
     assert mx["Wins"] == 2
     assert mx["Podiums"] == 3
     assert mx["Poles"] == 2
@@ -154,11 +156,37 @@ def test_compute_driver_stats_values(bronze):
     assert ln["PodiumRate"] == pytest.approx(2 / 3)
 
 
+def test_driver_stats_keeps_team_switch_as_one_driver(bronze):
+    switched = bronze.iloc[[0]].copy()
+    switched["RoundNumber"] = 4
+    switched["TeamId"] = "ferrari"
+    switched["TeamName"] = "Ferrari"
+    switched["TeamColor"] = "#ff0000"
+    switched["Points"] = 10
+    frame = pd.concat([bronze, switched], ignore_index=True)
+    stats = analytics.compute_driver_stats(frame, 2024)
+    max_rows = stats[stats["DriverId"] == "max"]
+    assert len(max_rows) == 1
+    assert max_rows.iloc[0]["TeamName"] == "Ferrari"
+    assert max_rows.iloc[0]["Points"] == 86
+
+
+def test_grid_zero_and_dnf_do_not_bias_position_averages(bronze):
+    frame = bronze.copy()
+    frame.loc[
+        (frame["DriverId"] == "lando") & (frame["RoundNumber"] == 3),
+        "GridPosition",
+    ] = 0
+    stats = analytics.compute_driver_stats(frame, 2024).set_index("DriverId")
+    assert stats.loc["lando", "AvgGrid"] == pytest.approx(3.0)
+    assert stats.loc["lando", "AvgFinish"] == pytest.approx(2.5)
+
+
 def test_compute_team_stats_values(bronze):
     teams = analytics.compute_team_stats(bronze, 2024).set_index("TeamName")
 
     assert teams.loc["RB", "Rank"] == 1
-    assert teams.loc["RB", "Points"] == 68.0
+    assert teams.loc["RB", "Points"] == 76.0
     assert teams.loc["RB", "Wins"] == 2
     assert teams.loc["RB", "Podiums"] == 3
     assert teams.loc["McLaren", "Points"] == 33.0
@@ -276,7 +304,7 @@ def test_build_insights(preds, bronze_pairs):
 
     assert 1 <= len(lines) <= 5
     assert all(isinstance(x, str) and x for x in lines)
-    assert any("AAA" in line and "biggest mover" in line for line in lines)
+    assert any("AAA" in line and "maior mudança" in line for line in lines)
 
 
 def test_build_insights_empty_inputs():
@@ -295,5 +323,36 @@ def test_top_factors_ranks_by_importance_and_flags_direction():
     tf = analytics.top_factors(importances, row, median, k=5)
 
     assert tf["feature"].tolist() == ["f_hi", "f_lo"]  # f_missing skipped (not in row)
-    assert tf.iloc[0]["vs_field"] == "above field"
-    assert tf.iloc[1]["vs_field"] == "below field"
+    assert tf.iloc[0]["vs_field"] == "acima"
+    assert tf.iloc[1]["vs_field"] == "abaixo"
+
+
+def test_classify_result_preserves_non_finish_categories():
+    assert analytics.classify_result("1", "Finished") == "FINISHED"
+    assert analytics.classify_result("R", "Engine") == "DNF"
+    assert analytics.classify_result("D", "Disqualified") == "DSQ"
+    assert analytics.classify_result("W", "Withdrew") == "DNS"
+
+
+def test_normalize_probabilities_sums_one_per_snapshot():
+    frame = pd.DataFrame(
+        {
+            "dt_ref": ["2024-01-01", "2024-01-01", "2024-02-01"],
+            "raw_score": [0.8, 0.2, 0.4],
+        }
+    )
+    out = analytics.normalize_probabilities(frame)
+    assert out.groupby("dt_ref")["prob_win"].sum().tolist() == pytest.approx([1, 1])
+
+
+def test_normalize_probabilities_uses_uniform_fallback_for_zero_scores():
+    frame = pd.DataFrame({"dt_ref": ["r1", "r1"], "raw_score": [0, 0]})
+    out = analytics.normalize_probabilities(frame)
+    assert out["prob_win"].tolist() == pytest.approx([0.5, 0.5])
+
+
+def test_standings_history_carries_points_through_missing_round(bronze):
+    frame = bronze[~((bronze["FullName"] == "Lando N") & (bronze["RoundNumber"] == 2))]
+    history = analytics.compute_standings_history(frame, 2024)
+    lando = history[history["DriverId"] == "lando"].set_index("RoundNumber")
+    assert lando.loc[2, "CumulativePoints"] == lando.loc[1, "CumulativePoints"]

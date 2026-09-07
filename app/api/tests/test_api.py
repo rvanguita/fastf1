@@ -91,6 +91,42 @@ def test_predict_values_not_a_list_returns_422(client, fake_model):
     assert resp.status_code == 422
 
 
+def test_predict_v1_normalizes_each_snapshot(client, fake_model):
+    response = client.post(
+        "/v1/predict",
+        json={
+            "values": [
+                {"id": "2024-01-01_a", "prediction_group": "r1", "f1": 1, "f2": 2},
+                {"id": "2024-01-01_b", "prediction_group": "r1", "f1": 3, "f2": 4},
+            ]
+        },
+    )
+    assert response.status_code == 200
+    predictions = response.json()["predictions"]
+    assert sum(item["probability"] for item in predictions.values()) == pytest.approx(1)
+    assert predictions["2024-01-01_a"]["raw_score"] == pytest.approx(0.7)
+
+
+def test_model_card_has_safe_defaults(client, fake_model):
+    body = client.get("/v1/model-card").json()
+    assert body["status"] == "experimental"
+    assert body["evaluations"] == []
+
+
+def test_explain_v1_uses_explanation_helper(client, fake_model, monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "_shap_explanations",
+        lambda model, frame, top_n: {frame.iloc[0]["id"]: {"contributions": []}},
+    )
+    response = client.post(
+        "/v1/explain",
+        json={"values": [{"id": "x", "f1": 1, "f2": 2}], "top_n": 5},
+    )
+    assert response.status_code == 200
+    assert "x" in response.json()["explanations"]
+
+
 # ── /model_info ─────────────────────────────────────────────────────────────
 
 

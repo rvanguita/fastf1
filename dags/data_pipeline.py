@@ -90,6 +90,16 @@ SILVER_TB_ABT = Asset(
     uri=f"file://{PATH_SILVER}/tb_abt",
 )
 
+SILVER_MART_DRIVER_ROUND = Asset(
+    name="silver_mart_driver_round",
+    uri=f"file://{PATH_SILVER}/mart_driver_round",
+)
+
+SILVER_MART_STANDINGS = Asset(
+    name="silver_mart_standings",
+    uri=f"file://{PATH_SILVER}/mart_standings",
+)
+
 
 # ---------------------------------------------------------------------------
 # DAG
@@ -256,14 +266,33 @@ def formula_one_data_pipeline() -> None:
 
             create_abt()
 
+        @task_group(group_id="analytical_marts")
+        def analytical_marts_group() -> None:
+
+            @task(
+                task_id="create",
+                inlets=[BRONZE_RESULTS],
+                outlets=[SILVER_MART_DRIVER_ROUND, SILVER_MART_STANDINGS],
+            )
+            def create_analytical_marts() -> None:
+                silver_data = SilverData()
+                try:
+                    silver_data.analytical_marts()
+                finally:
+                    silver_data.stop()
+
+            create_analytical_marts()
+
         champions = champions_group()
         drivers_statistics_group = driver_statistics_group()
         driver_all_statistic = driver_consolidate_statistic()
         abt = abt_group()
+        analytical_marts = analytical_marts_group()
 
         champions
         drivers_statistics_group >> driver_all_statistic
         [champions, driver_all_statistic] >> abt
+        analytical_marts
 
     @task(task_id="sender_mysql")
     def sender_mysql() -> None:
