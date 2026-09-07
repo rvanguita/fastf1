@@ -8,7 +8,21 @@ Uma plataforma de dados e machine learning para transformar resultados históric
 
 O projeto percorre o ciclo completo: ingere dados da FastF1, organiza um lakehouse em Delta Lake, orquestra transformações com Airflow, treina e registra modelos no MLflow, publica previsões por FastAPI e entrega uma experiência analítica em Streamlit.
 
-## Por que este projeto existe
+## Índice
+
+- [Visão geral](#visão-geral)
+- [Arquitetura](#arquitetura)
+- [Stack tecnológica](#stack-tecnológica)
+- [Estrutura do repositório](#estrutura-do-repositório)
+- [Executando localmente](#executando-localmente)
+- [Pipeline de dados](#pipeline-de-dados)
+- [Modelo preditivo](#modelo-preditivo)
+- [Produto analítico](#produto-analítico)
+- [API](#api)
+- [Qualidade e testes](#qualidade-e-testes)
+- [Limitações e próximos passos](#limitações-e-próximos-passos)
+
+## Visão geral
 
 Lake FastF1 nasceu para explorar um problema esportivo como um produto de dados de ponta a ponta — não apenas como um notebook ou modelo isolado.
 
@@ -18,83 +32,55 @@ Lake FastF1 nasceu para explorar um problema esportivo como um produto de dados 
 
 ## Arquitetura
 
-```text
-┌────────────────── Airflow DAG: data-pipeline (semanal, segunda-feira 00:00) ───────────────────┐
-│                                                                                                │
-│  FastF1 ──► Raw (Parquet) ──► Bronze (Delta) ──► Silver (Delta: ABT + marts)                   │
-│                                      │                    │                                    │
-│                                      └────────────────────┴──────────► MySQL (espelho para BI) │
-└──────────────────┬─────────────────────────────────────────────────────────────────────────────┘
-                   │ envio manual: src/sender.py
-             ┌─────▼──────┐
-             │ Amazon S3  │
-             └────────────┘
+```mermaid
+flowchart TD
+    FASTF1["FastF1 / Ergast"]
 
-Silver / tb_abt ──► treino temporal ──► MLflow (tracking + registry) ──modelo──► FastAPI :5002
-                    src/train_driver_champion.py                                 ▲
-                                                                                 │
-                                                          /v1/predict            │
-Bronze + Silver + marts ──leitura direta──► Streamlit :8501 ─────────────────────┤
-                                                          /v1/explain            │
-                                                          /v1/model-card ────────┘
+    subgraph lake["Lakehouse — arquitetura medalhão"]
+        RAW["Raw<br/>Parquet · um arquivo por sessão"]
+        BRONZE["Bronze<br/>Delta · histórico consolidado"]
+        SILVER["Silver<br/>Delta · champions · driver_statistic_N<br/>driver_all_statistic · tb_abt · marts"]
+    end
+
+    subgraph ml["Modelo"]
+        TRAIN["train_driver_champion.py<br/>split temporal · rolling origin · calibração"]
+        MLFLOW["MLflow<br/>tracking + registry"]
+    end
+
+    subgraph serving["Serving"]
+        API["FastAPI :5002<br/>/predict · /v1/predict<br/>/v1/explain · /v1/model-card"]
+        APP["Streamlit :8501<br/>quatro páginas analíticas"]
+    end
+
+    subgraph external["Consumo externo"]
+        MYSQL["MySQL<br/>espelho para BI"]
+        S3["Amazon S3<br/>arquivo Raw · envio manual"]
+    end
+
+    AIRFLOW["Apache Airflow · DAG data-pipeline<br/>semanal (segunda 00:00) · sem catch-up"]
+
+    FASTF1 --> RAW --> BRONZE --> SILVER
+    AIRFLOW -. orquestra .-> RAW
+    AIRFLOW -. orquestra .-> BRONZE
+    AIRFLOW -. orquestra .-> SILVER
+    AIRFLOW -. orquestra .-> MYSQL
+    SILVER -->|tb_abt| TRAIN --> MLFLOW
+    MLFLOW -->|modelo registrado| API
+    BRONZE --> APP
+    SILVER --> APP
+    API <-->|previsões · explicações · model card| APP
+    BRONZE --> MYSQL
+    SILVER --> MYSQL
+    RAW -. envio manual .-> S3
 ```
 
 ![Fluxo visual de dados atravessando camadas progressivamente mais estruturadas até chegar à análise](img/lakehouse-architecture.webp)
 
 O Airflow coordena o caminho semanal da FastF1 até o espelho MySQL. O envio dos arquivos Raw ao Amazon S3 é manual e opcional; o treino temporal também ocorre fora do DAG e registra seus artefatos no MLflow. Para compor o produto analítico, o Streamlit lê Bronze, Silver e marts diretamente enquanto consulta previsões, explicações e o model card publicados pela FastAPI.
 
-### Fluxo dos dados
-
-1. **Raw:** a FastF1 é consultada por temporada, rodada e tipo de sessão; cada resultado é persistido em Parquet.
-2. **Bronze:** o Spark consolida os arquivos em uma tabela Delta com o histórico completo.
-3. **Silver:** consultas Spark SQL produzem campeões, estatísticas móveis, ABT do modelo e marts analíticos.
-4. **Treino:** somente temporadas concluídas entram no modelo; backtests avançam cronologicamente e os artefatos são registrados no MLflow.
-5. **Serving:** a FastAPI carrega a versão registrada e o Streamlit combina previsões com resultados Bronze/Silver.
-6. **Consumo externo:** o último estágio do DAG replica as tabelas Delta para MySQL. O envio Raw para S3 é uma rotina manual e opcional.
-
 O DAG `data-pipeline` executa às segundas-feiras, sem catch-up e com uma execução ativa por vez. Os assets do Airflow registram a dependência entre Raw, Bronze, Silver e o espelho MySQL.
 
-## Produto analítico
-
-O dashboard foi estruturado em quatro páginas. Temporada, pilotos em destaque e janela de tendência são filtros globais.
-
-| Página | Pergunta principal | Visualizações |
-|---|---|---|
-| **Visão geral** | Quem controla o campeonato e o que mudou? | KPIs, ranking, chances do título e insights automáticos |
-| **Campeonato** | Como a disputa evoluiu rodada a rodada? | Pontos acumulados, bump chart, matriz de resultados e grid → chegada |
-| **Comparador** | Onde estão as diferenças entre pilotos e equipes? | Dumbbells, construtores e duelos entre companheiros |
-| **Modelo & dados** | A previsão é confiável e sustentada por dados atualizados? | Backtests, calibração, importância global, SHAP e saúde dos dados |
-
-A interface continua utilizável quando a API preditiva está fora do ar. Se os novos marts ainda não estiverem materializados, a camada analítica recompõe as métricas diretamente do Bronze.
-
-### Semântica analítica
-
-- Pontos do campeonato incluem Race e Sprint; vitórias e pódios consideram a corrida principal.
-- DNF, DNS, DNQ, DSQ e NC permanecem categorias explícitas.
-- Grid zero representa pit lane e não contamina médias de posição.
-- Trocas de equipe não duplicam um piloto na classificação da temporada.
-- Rodadas sem participação preservam os pontos acumulados anteriores.
-- Probabilidades do mesmo snapshot são mutuamente exclusivas e somam 100%.
-
-Os grãos, chaves, regras e expectativas de qualidade estão no [contrato de dados analíticos](docs/analytics-data-contract.md).
-
-## Modelo preditivo
-
-O alvo é identificar o campeão de pilotos a partir do histórico disponível em cada data de referência.
-
-![Snapshots históricos e trajetórias probabilísticas convergindo após validação e calibração](img/model-intelligence.webp)
-
-- A temporada em andamento é excluída dos rótulos de treino.
-- O universo de candidatos contém apenas pilotos que já participaram da temporada analisada.
-- O backtest usa *rolling origin*: uma temporada é testada somente com anos anteriores no treino.
-- O estimador combina imputação constante, Random Forest e calibração sigmoide aprendida fora do tempo.
-- ROC-AUC é auxiliar; o model card também registra Brier score, log loss, acerto do campeão e baseline de pontos recentes.
-- O status permanece `experimental` quando o modelo não supera o baseline definido.
-- A explicação individual usa SHAP; importância global e contribuição local são apresentadas separadamente.
-
-Os limites retornados pela API representam a dispersão entre membros do ensemble. Eles não devem ser interpretados como garantia ou intervalo de confiança causal.
-
-## Tecnologias
+## Stack tecnológica
 
 | Responsabilidade | Tecnologias |
 |---|---|
@@ -107,6 +93,34 @@ Os limites retornados pela API representam a dispersão entre membros do ensembl
 | Produto analítico | Streamlit, Plotly |
 | Consumo externo | MySQL, Amazon S3 |
 | Ambiente e entrega | uv, Docker, Docker Compose |
+
+## Estrutura do repositório
+
+```text
+lake-fastf1/
+├── app/
+│   ├── api/                  # FastAPI: inferência, explicações e model card
+│   └── streamlit/            # dashboard: páginas, dados, semântica e gráficos
+├── dags/
+│   └── data_pipeline.py      # DAG Airflow com assets Raw → Bronze → Silver → MySQL
+├── docs/                     # contratos e documentação complementar
+├── src/
+│   ├── queries/              # transformações SQL da camada Silver
+│   │   ├── champions.sql
+│   │   ├── driver_statistic.sql
+│   │   ├── mart_driver_round.sql
+│   │   ├── mart_standings.sql
+│   │   └── tb_abt.sql
+│   ├── extract_data.py       # FastF1 → Raw (Parquet)
+│   ├── spark_session.py      # Raw → Bronze e helpers Delta
+│   ├── silver_data.py        # Bronze → Silver, marts e validações
+│   ├── sender_local.py       # espelho das tabelas Delta para MySQL
+│   ├── sender.py             # upload manual dos arquivos Raw para S3
+│   └── train_driver_champion.py
+├── tests/                    # testes do pipeline e da preparação do treino
+├── docker-compose.yml        # Airflow, FastAPI e Streamlit
+└── pyproject.toml
+```
 
 ## Executando localmente
 
@@ -158,6 +172,55 @@ Spark e Delta exigem Java 17. O devcontainer do projeto já oferece esse ambient
 
 Consulte `.env.example` para os valores esperados. Os caminhos `TABLE_PATH_*` do Streamlit são definidos no `docker-compose.yml` e representam os mounts somente leitura dentro do container.
 
+## Pipeline de dados
+
+1. **Raw:** a FastF1 é consultada por temporada, rodada e tipo de sessão; cada resultado é persistido em Parquet.
+2. **Bronze:** o Spark consolida os arquivos em uma tabela Delta com o histórico completo.
+3. **Silver:** consultas Spark SQL produzem campeões, estatísticas móveis, ABT do modelo e marts analíticos.
+4. **Treino:** somente temporadas concluídas entram no modelo; backtests avançam cronologicamente e os artefatos são registrados no MLflow.
+5. **Serving:** a FastAPI carrega a versão registrada e o Streamlit combina previsões com resultados Bronze/Silver.
+6. **Consumo externo:** o último estágio do DAG replica as tabelas Delta para MySQL. O envio Raw para S3 é uma rotina manual e opcional.
+
+## Modelo preditivo
+
+O alvo é identificar o campeão de pilotos a partir do histórico disponível em cada data de referência.
+
+![Snapshots históricos e trajetórias probabilísticas convergindo após validação e calibração](img/model-intelligence.webp)
+
+- A temporada em andamento é excluída dos rótulos de treino.
+- O universo de candidatos contém apenas pilotos que já participaram da temporada analisada.
+- O backtest usa *rolling origin*: uma temporada é testada somente com anos anteriores no treino.
+- O estimador combina imputação constante, Random Forest e calibração sigmoide aprendida fora do tempo.
+- ROC-AUC é auxiliar; o model card também registra Brier score, log loss, acerto do campeão e baseline de pontos recentes.
+- O status permanece `experimental` quando o modelo não supera o baseline definido.
+- A explicação individual usa SHAP; importância global e contribuição local são apresentadas separadamente.
+
+Os limites retornados pela API representam a dispersão entre membros do ensemble. Eles não devem ser interpretados como garantia ou intervalo de confiança causal.
+
+## Produto analítico
+
+O dashboard foi estruturado em quatro páginas. Temporada, pilotos em destaque e janela de tendência são filtros globais.
+
+| Página | Pergunta principal | Visualizações |
+|---|---|---|
+| **Visão geral** | Quem controla o campeonato e o que mudou? | KPIs, ranking, chances do título e insights automáticos |
+| **Campeonato** | Como a disputa evoluiu rodada a rodada? | Pontos acumulados, bump chart, matriz de resultados e grid → chegada |
+| **Comparador** | Onde estão as diferenças entre pilotos e equipes? | Dumbbells, construtores e duelos entre companheiros |
+| **Modelo & dados** | A previsão é confiável e sustentada por dados atualizados? | Backtests, calibração, importância global, SHAP e saúde dos dados |
+
+A interface continua utilizável quando a API preditiva está fora do ar. Se os novos marts ainda não estiverem materializados, a camada analítica recompõe as métricas diretamente do Bronze.
+
+### Semântica analítica
+
+- Pontos do campeonato incluem Race e Sprint; vitórias e pódios consideram a corrida principal.
+- DNF, DNS, DNQ, DSQ e NC permanecem categorias explícitas.
+- Grid zero representa pit lane e não contamina médias de posição.
+- Trocas de equipe não duplicam um piloto na classificação da temporada.
+- Rodadas sem participação preservam os pontos acumulados anteriores.
+- Probabilidades do mesmo snapshot são mutuamente exclusivas e somam 100%.
+
+Os grãos, chaves, regras e expectativas de qualidade estão no [contrato de dados analíticos](docs/analytics-data-contract.md).
+
 ## API
 
 A API mantém os contratos legados e adiciona uma versão voltada a transparência e consumo analítico.
@@ -189,26 +252,6 @@ uv run pytest
 ```
 
 A suíte cobre ingestão, helpers Spark, envio MySQL/S3, contratos SQL, preparação temporal do modelo, endpoints da API, semântica analítica e contratos dos gráficos. O CI executa as três suítes e `ruff format --check` a cada push e pull request.
-
-## Estrutura do repositório
-
-```text
-lake-fastf1/
-├── app/
-│   ├── api/                  # inferência, explicações e model card
-│   └── streamlit/            # páginas, dados, semântica e gráficos
-├── dags/                     # orquestração Airflow
-├── docs/                     # contratos e documentação complementar
-├── src/
-│   ├── queries/              # transformações SQL da camada Silver
-│   ├── extract_data.py       # FastF1 → Raw
-│   ├── spark_session.py      # Raw → Bronze e helpers Delta
-│   ├── silver_data.py        # Bronze → Silver e validações
-│   └── train_driver_champion.py
-├── tests/                    # testes do pipeline e do treino
-├── docker-compose.yml
-└── pyproject.toml
-```
 
 ## Limitações e próximos passos
 
