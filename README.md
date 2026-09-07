@@ -2,8 +2,6 @@
 
 [![tests](https://github.com/rvanguita/lake-fastf1/actions/workflows/tests.yml/badge.svg)](https://github.com/rvanguita/lake-fastf1/actions/workflows/tests.yml)
 
-![Monoposto percorrendo um circuito formado por fluxos e camadas de dados](img/lake-fastf1-hero.webp)
-
 Uma plataforma de dados e machine learning para transformar resultados históricos da Fórmula 1 em um lakehouse confiável, análises interativas e probabilidades transparentes para o campeonato de pilotos.
 
 O Lake FastF1 foi construído como um projeto de engenharia de dados ponta a ponta. Ele coleta dados da [FastF1](https://docs.fastf1.dev/), persiste os arquivos brutos, organiza tabelas Delta em camadas, materializa datasets analíticos, treina um modelo temporalmente seguro e publica os resultados por uma API e um dashboard.
@@ -72,8 +70,6 @@ flowchart LR
     api --> dashboard
 ```
 
-![Fluxo visual de dados atravessando camadas progressivamente mais estruturadas até chegar à análise](img/lakehouse-architecture.webp)
-
 ### Fluxo em seis etapas
 
 1. **Extração:** `src/extract_data.py` consulta sessões Race e Sprint da FastF1 e grava cada resultado como Parquet em `PATH_RAW`.
@@ -117,8 +113,6 @@ As páginas carregam apenas os dados necessários para cada visão. As leituras 
 - Probabilidades de um mesmo snapshot são normalizadas entre os candidatos e somam 100% dentro da tolerância definida pela API.
 
 ## Modelo preditivo
-
-![Snapshots históricos e trajetórias probabilísticas convergindo após validação e calibração](img/model-intelligence.webp)
 
 O alvo do modelo é identificar o campeão de pilotos a partir das informações disponíveis em cada data de referência.
 
